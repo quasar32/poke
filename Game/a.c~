@@ -1,0 +1,117 @@
+#define NONNULL_PARAMS_ALL __attribute__ ((nonnull))
+#define NONNULL_PARAMS(...) __attribute((nonnull, __VA_ARGS__)) 
+
+#define BAISC_FREE_FUNC(name, func)\
+    void name(void * param) {\
+        func(param);\
+    } 
+
+#define BAISC_FREE_FUNC_NULL(name, func)\
+    void name(void * param) {\
+        func();\
+    } 
+
+typedef void basic_free (void *);
+
+struct alloc_stack {
+    size_t size;
+    void *allocs[1024];
+    basic_free *frees[1024];
+};
+
+void NONNULL_PARAMS(1, 3)
+push_alloc_stack(struct alloc_stack *as, void *alloc, basic_free free) {
+    assert(as->next < 1024):
+    as->allocs[next] = alloc;
+    as->frees[next] = free;
+    as->next++;
+}
+
+void NONNULL_PARAMS_ALL
+pop_alloc_stack(struct alloc_stack *as) {
+    assert(as->next > 0);
+    as->next--;
+    as->allocs[next] = alloc;
+    as->frees[next] = free;
+    return as;
+}
+
+void NONNULL_PARAMS_ALL
+pop_alloc_stack_multi(struct alloc_stack *as, size_t frame) {
+    while(as->next > frame) {
+        pop_alloc_stack(as);
+    }
+}
+
+BASIC_FREE_FUNC(bff_free_lib, FreeLibrary);
+BASIC_FREE_FUNC_NULL(bff_end_period, TimeEndPeriod);
+
+_Bool StartGranularTiming(struct alloc_stack *stack) {
+    _Bool IsGranular = 0;
+    MMRESULT WINAPI(*TimeEndPeriod)(UINT) = NULL;
+    HMODULE WinmmLib = LoadLibrary("winmm.dll");
+    if(WinmmLib) {
+        MMRESULT WINAPI(*TimeBeginPeriod)(UINT);
+        TimeBeginPeriod = (void *) GetProcAddress(WinmmLib, "timeBeginPeriod"); 
+        if(TimeBeginPeriod) {
+            TimeEndPeriod = (void *) GetProcAddress(WinmmLib, "timeEndPeriod"); 
+            if(TimeEndPeriod) {
+                IsGranular = TimeBeginPeriod(1) == TIMERR_NOERROR;
+            }
+        }
+        if(!IsGranular) {
+            FreeLibrary(WinmmLib);
+        }
+    }
+    
+    return IsGranular;
+}
+
+typedef HRESULT WINAPI direct_sound_create(LPCGUID, LPDIRECTSOUND *, LPUNKNOWN);
+
+static b32 Win32LoadDirectSound(HWND Window, win32_sound_output *SoundOutput) {
+    //Intialize Library
+    HMODULE Library = LoadLibraryA("dsound.dll");
+    if(!Library) {
+        return false;
+    }
+
+    direct_sound_create *DyDirectSoundCreate = (direct_sound_create *) 
+        GetProcAddress(Library, "DirectSoundCreate");
+    LPDIRECTSOUND DirectSound;
+    if(!DyDirectSoundCreate || 
+       FAILED(DyDirectSoundCreate(0, &DirectSound, 0)) ||
+       FAILED(DirectSound->SetCooperativeLevel(Window, DSSCL_PRIORITY))) {
+        return false;
+    }
+    //Set Shared Desc Info
+    DSBUFFERDESC PrimaryDesc = {
+        .dwSize = sizeof(DSBUFFERDESC),
+        .dwFlags = DSBCAPS_PRIMARYBUFFER
+    };
+    LPDIRECTSOUNDBUFFER PrimaryBuffer;
+    if(FAILED(DirectSound->CreateSoundBuffer(&PrimaryDesc, &PrimaryBuffer, 0))) {
+        return false;
+    }
+    WAVEFORMATEX WaveFormat = {
+        .wFormatTag = WAVE_FORMAT_PCM,
+        .nChannels = 2,
+        .nSamplesPerSec = (DWORD) SoundOutput->SamplesPerSecond,
+        .nAvgBytesPerSec = (DWORD) SoundOutput->SecondaryBufferSize,
+        .nBlockAlign = (WORD) SoundOutput->BytesPerSample,
+        .wBitsPerSample = 16
+    };
+    if(FAILED(PrimaryBuffer->SetFormat(&WaveFormat))) {
+        return false;
+    }
+    //Create Secondary Buffer
+    DSBUFFERDESC SecondaryDesc = {
+        .dwSize = sizeof(DSBUFFERDESC),
+        .dwBufferBytes = (DWORD) SoundOutput->SecondaryBufferSize,
+        .lpwfxFormat = &WaveFormat
+    };
+    if(FAILED(DirectSound->CreateSoundBuffer(&SecondaryDesc, &GlobalAudioBuffer, 0))) {
+        return false;
+    }
+    return true;
+}
