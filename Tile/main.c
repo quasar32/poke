@@ -16,7 +16,7 @@ static int GetPair(int ColorIndex) {
 static int MatchQuad(int TileMapWidth, uint8_t *QuadData, uint8_t *Tile) {
     int Result = 0;
     uint8_t *Quad = QuadData;
-    for(int QuadIndex = 0; QuadIndex < 64; QuadIndex++) {
+    for(int QuadIndex = 0; QuadIndex < 128; QuadIndex++) {
         if(Quad[0] == Tile[0] && 
            Quad[1] == Tile[1] &&
            Quad[2] == Tile[TileMapWidth] &&

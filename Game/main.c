@@ -5,11 +5,14 @@
 
 #define UNUSED __attribute__((unused))
 
+#define AnimPlayer 0
+#define AnimSeal 84
+
+#define BmWidth 160
+#define BmHeight 144
+
 #define SprHorzFlag 1
 #define SprVertFlag 2
-
-#define DirInBounds -2
-#define DirOutOfBounds -1
 
 #define DirUp 0
 #define DirLeft 1
@@ -35,10 +38,27 @@ typedef struct point {
     short Y;
 } point;
 
-typedef struct quad_map {
+typedef struct dim_rect {
+    int X;
+    int Y;
     int Width;
     int Height;
+} dim_rect;
+
+typedef struct text {
+    point Pos;
+    int Length;
+    char Data[256];
+} text;
+
+typedef struct quad_map {
+    int16_t Width;
+    int16_t Height;
+    int16_t DefaultQuad;
+    int16_t Count;
     uint8_t Quads[256][256];
+    point Loaded;
+    text Texts[256]; 
 } quad_map;
 
 typedef struct sprite {
@@ -48,11 +68,65 @@ typedef struct sprite {
     uint8_t Flags;
 } sprite;
 
+typedef struct quad_info {
+    point Point;
+    int Map;
+    int Dir;
+    int Quad;
+} quad_info;
+
+/*Global Constants*/
+static const point g_DirPoints[] = {
+    [DirUp] = {0, -1},
+    [DirLeft] = {-1, 0},
+    [DirDown] = {0, 1},
+    [DirRight] = {1, 0}
+};
+
 /*Globals*/
-int g_IsFullscreen = 0;
-int g_HasQuit = 0;
-RECT g_RestoreRect = {};
-uint8_t g_Keys[256] = {};
+static int g_IsFullscreen = 0;
+static int g_HasQuit = 0;
+static dim_rect g_RestoreRect = {};
+static uint8_t g_Keys[256] = {};
+static uint8_t g_BmPixels[160 * 144];
+static BITMAPINFO *g_BmInfo = NULL;
+
+/*Misc*/
+__attribute__((nonnull))
+static void CopyCharsWithNull(char *Dest, const char *Source, size_t Length) {
+    memcpy(Dest, Source, Length);
+    Dest[Length] = '\0';
+} 
+
+static int GetTileFromChar(int Char) {
+    int Output = Char;
+    if(Output >= '0' && Output <= ':') {
+        Output += 110 - '0';
+    } else if(Output >= 'A' && Output <= 'Z') {
+        Output += 121 - 'A';
+    } else if(Output >= 'a' && Output <= 'z') {
+        Output += 147 - 'a';
+    } else if(Output == '!') {
+        Output = 175;
+    } else if(Output == 'é') {
+        Output = 173;
+    } else if(Output == '\'') {
+        Output = 176;
+    } else if(Output == '~') {
+        Output = 179;
+    } else if(Char == '-') {
+        Output = 177;
+    } else if(Char == ',') {
+        Output = 180; 
+    } else {
+        Output = 0;
+    }
+    return Output;
+}
+
+static inline int ReverseDir(int Dir) {
+    return (Dir + 2) % 4;
+}
 
 /*Math Functions*/
 static int Min(int A, int B) {
@@ -69,26 +143,81 @@ static int Clamp(int Value, int Bottom, int Top) {
     return Value;
 }
 
+/*Timing*/
+static int64_t GetPerfFreq(void) {
+    LARGE_INTEGER PerfFreq;
+    QueryPerformanceFrequency(&PerfFreq);
+    return PerfFreq.QuadPart;
+}
+
+static int64_t GetPerfCounter(void) {
+    LARGE_INTEGER PerfCounter;
+    QueryPerformanceCounter(&PerfCounter);
+    return PerfCounter.QuadPart;
+}
+
+
+static int64_t GetDeltaCounter(int64_t BeginCounter) {
+    return GetPerfCounter() - BeginCounter;
+}
+
+static void SleepTillNextFrame(int IsGranular, int64_t PerfFreq, 
+                               int64_t BeginCounter, int64_t FrameDelta) {
+    int64_t InitDeltaCounter = GetDeltaCounter(BeginCounter);
+    if(InitDeltaCounter < FrameDelta) {
+        if(IsGranular) {
+            int64_t RemainCounter = FrameDelta - InitDeltaCounter;
+            uint32_t SleepMS = 1000 * RemainCounter / PerfFreq;
+            if(SleepMS) {
+                Sleep(SleepMS);
+            }
+        }
+        while(GetDeltaCounter(BeginCounter) < FrameDelta);
+    }
+} 
+
 /*Point Functions*/ 
 static point AddPoints(point A, point B)  {
-    point C = {
+    return (point) {
         .X = A.X + B.X,
         .Y = A.Y + B.Y
     };
-    return C;
+}
+
+static point SubPoints(point A, point B)  {
+    return (point) {
+        .X = A.X - B.X,
+        .Y = A.Y - B.Y
+    };
 }
 
 static int ComparePoints(point A, point B) {
     return A.X == B.X && A.Y == B.Y;
 }
 
-/*Inverse Dir*/
-static inline int ReverseDir(int Dir) {
-    return (Dir + 2) % 4;
+/*DimRect Functions*/
+static dim_rect WinToDimRect(RECT WinRect) {
+    return (dim_rect) {
+        .X = WinRect.left,
+        .Y = WinRect.top,
+        .Width = WinRect.right - WinRect.left,
+        .Height = WinRect.bottom - WinRect.top
+    };
 }
 
+static dim_rect GetDimClientRect(HWND Window) {
+    RECT WinClientRect;
+    GetClientRect(Window, &WinClientRect);
+    return WinToDimRect(WinClientRect);
+}
 
-/*Conversion Functions*/
+static dim_rect GetDimWindowRect(HWND Window) {
+    RECT WinWindowRect;
+    GetWindowRect(Window, &WinWindowRect);
+    return WinToDimRect(WinWindowRect);
+}
+
+/*Point Conversion Functions*/
 static point ConvertToQuadPoint(point Point) {
     point QuadPoint = {
         .X = Point.X / 16,
@@ -97,6 +226,13 @@ static point ConvertToQuadPoint(point Point) {
     return QuadPoint;
 }
 
+static point GetFacingPoint(point Pos, int Dir) {
+    point OldPoint = ConvertToQuadPoint(Pos);
+    point DirPoint = g_DirPoints[Dir];
+    return AddPoints(OldPoint, DirPoint);
+}
+
+/*Quad Functions*/
 static void SetToTiles(uint8_t TileMap[32][32], int TileX, int TileY, const uint8_t Set[4]) {
     TileMap[TileY][TileX] = Set[0];
     TileMap[TileY][TileX + 1] = Set[1];
@@ -104,45 +240,50 @@ static void SetToTiles(uint8_t TileMap[32][32], int TileX, int TileY, const uint
     TileMap[TileY + 1][TileX + 1] = Set[3];
 }
 
-typedef struct quad_info {
-    point Point;
-    int Map;
-    int Dir; 
-    int Quad;
-} quad_info;
+static int GetQuadMapDir(quad_map QuadMaps[2], int Map) {
+    point DirPoint = SubPoints(QuadMaps[!Map].Loaded, QuadMaps[Map].Loaded);
+    for(size_t I = 0; I < _countof(g_DirPoints); I++) {
+        if(ComparePoints(DirPoint, g_DirPoints[I])) {
+            return I;
+        }
+    }
+    return -1; 
+} 
 
 static quad_info GetQuad(quad_map QuadMaps[2], quad_info QuadInfo) {
+    int OldWidth = QuadMaps[QuadInfo.Map].Width;
+    int OldHeight = QuadMaps[QuadInfo.Map].Height;
+
+    int NewWidth = QuadMaps[!QuadInfo.Map].Width;
+    int NewHeight = QuadMaps[!QuadInfo.Map].Height;
+
     switch(QuadInfo.Dir) {
     case DirUp:
         if(QuadInfo.Point.Y < 0) {
+            QuadInfo.Point.X += (NewWidth - OldWidth) / 2;
+            QuadInfo.Point.Y += NewHeight; 
             QuadInfo.Map ^= 1;
-            QuadInfo.Point.X += (QuadMaps[QuadInfo.Map].Width - QuadMaps[!QuadInfo.Map].Width) / 2;
-            QuadInfo.Point.Y += QuadMaps[QuadInfo.Map].Height; 
-            QuadInfo.Dir = ReverseDir(QuadInfo.Dir);
         }
         break;
     case DirLeft:
         if(QuadInfo.Point.X < 0) {
             QuadInfo.Map ^= 1;
-            QuadInfo.Point.X += QuadMaps[QuadInfo.Map].Height; 
-            QuadInfo.Point.Y += (QuadMaps[QuadInfo.Map].Height- QuadMaps[!QuadInfo.Map].Height) / 2;
-            QuadInfo.Dir = ReverseDir(QuadInfo.Dir);
+            QuadInfo.Point.X += NewHeight; 
+            QuadInfo.Point.Y += (NewHeight - OldHeight) / 2;
         }
         break;
     case DirDown:
         if(QuadInfo.Point.Y >= QuadMaps[QuadInfo.Map].Height) {
-            QuadInfo.Point.Y -= QuadMaps[QuadInfo.Map].Height; 
+            QuadInfo.Point.X += (NewWidth - OldWidth) / 2;
+            QuadInfo.Point.Y -= OldHeight; 
             QuadInfo.Map ^= 1;
-            QuadInfo.Point.X += (QuadMaps[QuadInfo.Map].Width - QuadMaps[!QuadInfo.Map].Width) / 2;
-            QuadInfo.Dir = ReverseDir(QuadInfo.Dir);
         }
         break;
     case DirRight:
         if(QuadInfo.Point.X >= QuadMaps[QuadInfo.Map].Width) {
-            QuadInfo.Point.X -= QuadMaps[QuadInfo.Map].Width; 
+            QuadInfo.Point.X -= OldWidth; 
+            QuadInfo.Point.Y += (NewHeight - OldHeight) / 2;
             QuadInfo.Map ^= 1;
-            QuadInfo.Point.Y += (QuadMaps[QuadInfo.Map].Height- QuadMaps[!QuadInfo.Map].Height) / 2;
-            QuadInfo.Dir = ReverseDir(QuadInfo.Dir);
         } 
         break;
     }
@@ -191,15 +332,17 @@ static int ReadQuadMap(const char *Path, quad_map *QuadMap) {
     uint8_t RunData[65536];
     uint32_t BytesRead = ReadAll(Path, RunData, sizeof(RunData));
 
+    int EncodeSuccess = 1;
+    uint32_t RunIndex = 2;
+
+    /*ReadQuads*/
+    int QuadIndex = 0;
     QuadMap->Width = RunData[0] + 1;
     QuadMap->Height = RunData[1] + 1;
     int Size = QuadMap->Width * QuadMap->Height;
-    int QuadIndex = 0;
-    int EncodeSuccess = 1;
-    uint32_t RunIndex = 2;
-    while(EncodeSuccess && RunIndex < BytesRead) {
+    while(EncodeSuccess && QuadIndex < Size && RunIndex < BytesRead) {
         int QuadRaw = RunData[RunIndex++];
-        int Quad = QuadRaw & 63;
+        int Quad = QuadRaw & 127;
         int Repeat = 0;
 
         if(Quad == QuadRaw) {
@@ -222,12 +365,116 @@ static int ReadQuadMap(const char *Path, quad_map *QuadMap) {
         QuadIndex += Repeat;
     }
 
+    /*DefaultQuad*/
+    if(RunIndex < BytesRead) {
+        QuadMap->DefaultQuad = RunData[RunIndex++];
+    }
+
+    /*ReadText*/
+    if(RunIndex < BytesRead) {
+        QuadMap->Count = RunData[RunIndex++];
+
+        for(int TextIndex = 0; TextIndex < QuadMap->Count && EncodeSuccess; ) {
+            if(RunIndex < BytesRead - 3) {
+                int X = RunData[RunIndex++]; 
+                int Y = RunData[RunIndex++];
+                size_t Length = RunData[RunIndex++];
+                if(Length < _countof(QuadMap->Texts[TextIndex].Data)) {
+                    QuadMap->Texts[TextIndex].Pos.X = X;
+                    QuadMap->Texts[TextIndex].Pos.Y = Y;
+                    QuadMap->Texts[TextIndex].Length = Length;
+                    CopyCharsWithNull(QuadMap->Texts[TextIndex].Data, (char *) &RunData[RunIndex], Length);
+
+                    RunIndex += Length;
+                    TextIndex++;
+                } else {
+                    QuadMap->Count--;
+                    EncodeSuccess = 0;
+                }   
+            } else {
+                QuadMap->Count = TextIndex;
+                EncodeSuccess = 0;
+            }
+        } 
+    }
+
     int Success = EncodeSuccess && QuadIndex == Size;
     return Success;
 }
 
 /*Win32 Functions*/
-LRESULT CALLBACK WndProc(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam) {
+static void RenderFrame(HWND Window, HDC DeviceContext) {
+    dim_rect ClientRect = GetDimClientRect(Window);
+
+    int RenderWidth = ClientRect.Width - ClientRect.Width % BmWidth;
+    int RenderHeight = ClientRect.Height - ClientRect.Height % BmHeight;
+
+    int RenderColSize = RenderWidth * BmHeight;
+    int RenderRowSize = RenderHeight * BmWidth;
+    if(RenderColSize > RenderRowSize) {
+        RenderWidth = RenderRowSize / BmHeight;
+    } else {
+        RenderHeight = RenderColSize / BmWidth;
+    }
+    int RenderX = (ClientRect.Width - RenderWidth) / 2;
+    int RenderY = (ClientRect.Height - RenderHeight) / 2;
+
+    StretchDIBits(DeviceContext, RenderX, RenderY, RenderWidth, RenderHeight,
+                  0, 0, BmWidth, BmHeight, g_BmPixels, g_BmInfo, DIB_RGB_COLORS, SRCCOPY);
+    PatBlt(DeviceContext, 0, 0, RenderX, ClientRect.Height, BLACKNESS);
+    PatBlt(DeviceContext, RenderX + RenderWidth, 0, RenderX, ClientRect.Height, BLACKNESS);
+    PatBlt(DeviceContext, RenderX, 0, RenderWidth, RenderY, BLACKNESS);
+    PatBlt(DeviceContext, RenderX, RenderY + RenderHeight, RenderWidth, RenderY + 1, BLACKNESS);
+}
+
+static void SetMyWindowPos(HWND Window, DWORD Style, dim_rect Rect) {
+    SetWindowLongPtr(Window, GWL_STYLE, Style | WS_VISIBLE);
+    SetWindowPos(Window, 
+                 HWND_TOP, 
+                 Rect.X, Rect.Y, Rect.Width, Rect.Height, 
+                 SWP_FRAMECHANGED | SWP_NOREPOSITION);
+}
+
+static void PaintFrame(HWND Window) {
+    PAINTSTRUCT Paint;
+    HDC DeviceContext = BeginPaint(Window, &Paint);
+    RenderFrame(Window, DeviceContext);
+    EndPaint(Window, &Paint);
+}
+
+void UpdateClientSize(HWND Window, int IsFullscreen) {
+    if(IsFullscreen) {
+        dim_rect ClientRect = GetDimClientRect(Window);
+
+        HMONITOR Monitor = MonitorFromWindow(Window, MONITOR_DEFAULTTONEAREST);
+        MONITORINFO MonitorInfo = {
+            .cbSize = sizeof(MonitorInfo)
+        };
+        GetMonitorInfo(Monitor, &MonitorInfo);
+
+        dim_rect MonitorRect = WinToDimRect(MonitorInfo.rcMonitor);
+
+        if(MonitorRect.Width != ClientRect.Width || MonitorRect.Height != ClientRect.Height) {
+            SetMyWindowPos(Window, WS_POPUP, MonitorRect);
+        }
+    }
+}
+
+static void ToggleFullscreen(HWND Window) {
+    ShowCursor(g_IsFullscreen);
+    if(g_IsFullscreen) {
+        SetMyWindowPos(Window, WS_OVERLAPPEDWINDOW, g_RestoreRect);
+    } else {
+        g_RestoreRect = GetDimWindowRect(Window);
+    }
+    g_IsFullscreen ^= 1;
+}
+
+static int IsFirstKeyFrame(LPARAM LParam) {
+    return LParam >> 30 == 0;
+}
+
+static LRESULT CALLBACK WndProc(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam) {
     switch(Message) {
     case WM_KILLFOCUS:
         memset(g_Keys, 0, sizeof(g_Keys));
@@ -235,26 +482,16 @@ LRESULT CALLBACK WndProc(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam
     case WM_CLOSE:
         g_HasQuit = 1;
         return 0;
+    case WM_PAINT:
+        PaintFrame(Window);
+        return 0;
     case WM_KEYDOWN:
         switch(WParam) {
         case VK_F11:
-            /*ToggleFullscreen*/
-            ShowCursor(g_IsFullscreen);
-            if(g_IsFullscreen) {
-                SetWindowLongPtr(Window, GWL_STYLE, WS_OVERLAPPEDWINDOW | WS_VISIBLE);
-                int RestoreX = g_RestoreRect.left;
-                int RestoreY = g_RestoreRect.top;
-                int RestoreWidth = g_RestoreRect.right - g_RestoreRect.left;
-                int RestoreHeight = g_RestoreRect.bottom - g_RestoreRect.top;
-                SetWindowPos(Window, HWND_TOP, RestoreX, RestoreY, RestoreWidth,
-                        RestoreHeight, SWP_FRAMECHANGED | SWP_NOREPOSITION);
-            } else {
-                GetWindowRect(Window, &g_RestoreRect);
-            }
-            g_IsFullscreen ^= 1;
+            ToggleFullscreen(Window);
             break;
         default:
-            if(LParam >> 30 == 0) {
+            if(IsFirstKeyFrame(LParam)) {
                 g_Keys[WParam] = 1;
             }
         }
@@ -270,22 +507,20 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     srand(time(NULL));
 
     /*InitBitmap*/
-    uint8_t BmPixels[160 * 144];
-
-    BITMAPINFO *BmInfo = alloca(sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD) * 4);
-    BmInfo->bmiHeader = (BITMAPINFOHEADER) {
-        .biSize = sizeof(BmInfo->bmiHeader),
-        .biWidth = 160,
-        .biHeight = -144,
+    g_BmInfo = alloca(sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD) * 4);
+    g_BmInfo->bmiHeader = (BITMAPINFOHEADER) {
+        .biSize = sizeof(g_BmInfo->bmiHeader),
+        .biWidth = BmWidth,
+        .biHeight = -BmHeight,
         .biPlanes = 1,
         .biBitCount = 8,
         .biCompression = BI_RGB,
         .biClrUsed = 4
     };
-    BmInfo->bmiColors[0] = (RGBQUAD) {0xF8, 0xF8, 0xF8, 0x00};
-    BmInfo->bmiColors[1] = (RGBQUAD) {0xA8, 0xA8, 0xA8, 0x00};
-    BmInfo->bmiColors[2] = (RGBQUAD) {0x80, 0x80, 0x80, 0x00};
-    BmInfo->bmiColors[3] = (RGBQUAD) {0x00, 0x00, 0x00, 0x00};
+    g_BmInfo->bmiColors[0] = (RGBQUAD) {0xF8, 0xF8, 0xF8, 0x00};
+    g_BmInfo->bmiColors[1] = (RGBQUAD) {0xA8, 0xA8, 0xA8, 0x00};
+    g_BmInfo->bmiColors[2] = (RGBQUAD) {0x80, 0x80, 0x80, 0x00};
+    g_BmInfo->bmiColors[3] = (RGBQUAD) {0x00, 0x00, 0x00, 0x00};
 
     /*InitWindow*/
     WNDCLASS WindowClass = {
@@ -299,14 +534,13 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         return 1;
     }
 
-    RECT WinWindowRect = {0, 0, 160, 144};
+    RECT WinWindowRect = {0, 0, BmWidth, BmHeight};
     AdjustWindowRect(&WinWindowRect, WS_OVERLAPPEDWINDOW, 0);
 
-    int WindowWidth = WinWindowRect.right - WinWindowRect.left;
-    int WindowHeight = WinWindowRect.bottom - WinWindowRect.top;
+    dim_rect WindowRect = WinToDimRect(WinWindowRect);
 
     HWND Window = CreateWindow(WindowClass.lpszClassName, "PokeGame", WS_OVERLAPPEDWINDOW,
-                               CW_USEDEFAULT, CW_USEDEFAULT, WindowWidth, WindowHeight, 
+                               CW_USEDEFAULT, CW_USEDEFAULT, WindowRect.Width, WindowRect.Height, 
                                NULL, NULL, Instance, NULL);
     if(!Window) {
         return 1;
@@ -315,7 +549,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     SetCurrentDirectory("../Shared");
 
     /*LoadQuadData*/
-    uint8_t QuadData[64][4] = {};
+    uint8_t QuadData[128][4] = {};
     int SetsRead = ReadAll("QuadData", QuadData, sizeof(QuadData)); 
     for(int Set = 0; Set < SetsRead; Set++) {
         for(int I = 0; I < 4; I++) {
@@ -324,7 +558,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     }
     
     /*ReadQuadProps*/
-    uint8_t QuadProps[64] = {};
+    uint8_t QuadProps[128] = {};
     ReadAll("QuadProps", QuadProps, sizeof(QuadProps));
 
     /*LoadTileData*/
@@ -334,34 +568,35 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     uint8_t WaterData[7 * TileSize];
 
     ReadTileData("TileData", TileData, 110);
-    ReadTileData("Numbers", TileData + 110 * TileSize, 256);
+    ReadTileData("Numbers", TileData + 110 * TileSize, 146);
     ReadTileData("SpriteData", SpriteData, 256);
     ReadTileData("FlowerData", FlowerData, 3);
     ReadTileData("WaterData", WaterData, 7);
     ReadTileData("ShadowData", SpriteData + 255 * TileSize, 1);
 
-    uint8_t TileMap[32][32];
-    static quad_map QuadMaps[2] = {};
+    /*InitQuadMaps*/
+    static quad_map QuadMaps[2] = {
+        {
+            .Loaded = {0, 2} 
+        },
+        {
+            .Loaded = {-1, 0}
+        }
+    };
 
-    #define WorldWidth 2
+    #define WorldWidth 1
     #define WorldHeight 4 
 
     const char *QuadMapPaths[WorldHeight][WorldWidth] = {
-        {"ViridianCity", "ViridianCity"},
+        {"VirdianCity"},
         {"Route1"},
         {"PalleteTown"},
         {"Route21"}
     };
 
-    point LoadedQuadMaps[] = {{0, 2}, {-1, 0}};
-    int QuadMapDir = -1;
     ReadQuadMap("PalleteTown", &QuadMaps[0]);
 
-    sprite Sprites[40] = {};
-
-    int IsLeaping = 0;
-    int IsPaused = 0;
-
+    /*InitObjects*/
     struct object {
         point Pos;
 
@@ -373,6 +608,8 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         uint8_t Map;
         uint8_t IsRight;
         uint8_t Tick;
+
+        const char *Text;
     } Objs[] = {
         {
             .Pos = {80, 96},
@@ -397,31 +634,29 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
             .Tile = 28,
             .Map = 0,
         },
-        /*
 
         {
             .Pos = {80, 384},
             .Dir = DirDown,
             .Speed = 1,
             .Tile = 98,
-            .Map = 0
+            .Map = 1
         }
-        */
     };
     
-    int ObjCount = 3;
+    int ObjCount = 4;
+
+    /*GameBoyGraphics*/
+    sprite Sprites[40] = {};
+    uint8_t TileMap[32][32];
+
+    uint8_t ScrollX = 0;
+    uint8_t ScrollY = 0;
 
     /*TranslateFullQuadMapToTiles*/
     void PlaceQuadMap(int QuadMinX, int QuadMinY, 
                       int QuadMaxX, int QuadMaxY,
                       int TileMinX, int TileMinY) {
-        uint8_t DefaultQuads[WorldHeight][WorldWidth] = {
-            {14},
-            {14},
-            {14},
-            {39}
-        }; 
-        
         int TileY = TileMinY;
         for(int QuadY = QuadMinY; QuadY < QuadMaxY; QuadY++) {
             int TileX = TileMinX;
@@ -429,13 +664,12 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 quad_info QuadInfo = {
                     .Point = (point) {QuadX, QuadY},
                     .Map = Objs[0].Map,
-                    .Dir = QuadMapDir,
+                    .Dir = GetQuadMapDir(QuadMaps, QuadInfo.Map),
                     .Quad = -1
                 };
                 int Quad = GetQuad(QuadMaps, QuadInfo).Quad;
                 if(Quad < 0) {
-                    point QuadPoint = LoadedQuadMaps[QuadInfo.Map];
-                    Quad = DefaultQuads[QuadPoint.Y][QuadPoint.X];
+                    Quad = QuadMaps[QuadInfo.Map].DefaultQuad;
                 }
                 SetToTiles(TileMap, TileX, TileY, QuadData[Quad]); 
                 TileX = (TileX + 2) % 32;
@@ -450,51 +684,37 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     int QuadMaxY = QuadMinY + 9;
     PlaceQuadMap(QuadMinX, QuadMinY, QuadMaxX, QuadMaxY, 0, 0);
 
-    int TileY = 0;
-    for(int QuadY = QuadMinY; QuadY < QuadMaxY; QuadY++) {
-        int TileX = 0;
-        for(int QuadX = QuadMinX; QuadX < QuadMaxX; QuadX++) {
-            uint8_t *Set = QuadData[QuadMaps[Objs[0].Map].Quads[QuadY][QuadX]];
-            TileMap[TileY][TileX] = Set[0];
-            TileMap[TileY][TileX + 1] = Set[1];
-            TileMap[TileY + 1][TileX] = Set[2];
-            TileMap[TileY + 1][TileX + 1] = Set[3];
-            TileX += 2;
-        }
-        TileY += 2;
-    }
-
     /*WindowMap*/
     uint8_t WindowMap[32][32];
-    UNUSED uint8_t WindowX = 0;
-    uint8_t WindowY = 160;
+    uint8_t WindowY = 144;
 
-    /*Other*/
+    /*Misc*/
     uint64_t Tick = 0;
 
+    int IsLeaping = 0;
+    int IsPaused = 0;
+
+    /*Text*/
     const char *ActiveText = "Text not init";
     point TextTilePt = {1, 14};
     uint64_t TextTick = 0;
 
-    uint8_t ScrollX = 0;
-    uint8_t ScrollY = 0;
-
     /*Timing*/
-    LARGE_INTEGER PerfFreq;
-    QueryPerformanceFrequency(&PerfFreq);
-
-    LARGE_INTEGER BeginCounter;
-    int64_t FrameDelta = PerfFreq.QuadPart / 10;
+    int64_t BeginCounter = 0;
+    int64_t PerfFreq = GetPerfFreq();
+    int64_t FrameDelta = PerfFreq / 30;
 
     /*LoadWinmm*/
     int IsGranular = 0;
-    MMRESULT WINAPI(*TimeEndPeriod)(UINT) = NULL;
+
+    typedef MMRESULT WINAPI(winmm_func)(UINT);
+
+    winmm_func *TimeEndPeriod = NULL;
     HMODULE WinmmLib = LoadLibrary("winmm.dll");
     if(WinmmLib) {
-        MMRESULT WINAPI(*TimeBeginPeriod)(UINT);
-        TimeBeginPeriod = (void *) GetProcAddress(WinmmLib, "timeBeginPeriod"); 
+        winmm_func *TimeBeginPeriod = (winmm_func *) GetProcAddress(WinmmLib, "timeBeginPeriod"); 
         if(TimeBeginPeriod) {
-            TimeEndPeriod = (void *) GetProcAddress(WinmmLib, "timeEndPeriod"); 
+            TimeEndPeriod = (winmm_func *) GetProcAddress(WinmmLib, "timeEndPeriod"); 
             if(TimeEndPeriod) {
                 IsGranular = TimeBeginPeriod(1) == TIMERR_NOERROR;
             }
@@ -507,7 +727,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     /*MainLoop*/
     ShowWindow(Window, CmdShow);
     while(!g_HasQuit) {
-        QueryPerformanceCounter(&BeginCounter);
+        BeginCounter = GetPerfCounter();
 
         int TickCycle = Tick / 16;
 
@@ -519,13 +739,6 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         }
 
         /*InitSharedUpdate*/
-        point DirPoints[] = {
-            [DirUp] = {0, -1},
-            [DirLeft] = {-1, 0},
-            [DirDown] = {0, 1},
-            [DirRight] = {1, 0}
-        };
-
         point NextPoints[] = {
             [DirUp] = {0, 1},
             [DirLeft] = {1, 0},
@@ -582,39 +795,14 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                         TextTilePt.Y = 18;
                         break;
                     default:
-                        {
-                            int Output = ActiveText[0];
-                            if(Output >= '0' && Output <= ':') {
-                                Output += 110 - '0';
-                            } else if(Output >= 'A' && Output <= 'Z') {
-                                Output += 121 - 'A';
-                            } else if(Output >= 'a' && Output <= 'z') {
-                                Output += 147 - 'a';
-                            } else if(Output == '!') {
-                                Output = 175;
-                            } else if(Output == 'é') {
-                                Output = 173;
-                            } else if(Output == '\'') {
-                                Output = 176;
-                            } else if(Output == '~') {
-                                Output = 179;
-                            } else if(Output == '-') {
-                                Output = 177;
-                            } else if(Output == ',') {
-                                Output = 180; 
-                            } else {
-                                Output = 0;
-                            }
-
-                            WindowMap[TextTilePt.Y][TextTilePt.X] = Output;
-                            TextTilePt.X++;
-                        }
+                        WindowMap[TextTilePt.Y][TextTilePt.X] = GetTileFromChar(ActiveText[0]);
+                        TextTilePt.X++;
                     }
                     ActiveText++;
                 }
             } else if(g_Keys['X']) {
                 IsPaused = 0;
-                WindowY = 160;
+                WindowY = 144;
                 g_Keys['X'] = 0;
             }
         } else {
@@ -640,16 +828,13 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                     HasMoveKey = 0;
                 }
 
-                /*GetFacingPoint*/
-                point OldPoint = ConvertToQuadPoint(Objs[0].Pos);
-                point DirPoint = DirPoints[Objs[0].Dir];
-                point NewPoint = AddPoints(OldPoint, DirPoint);
+                point NewPoint = GetFacingPoint(Objs[0].Pos, Objs[0].Dir);
 
                 /*FetchQuadProp*/
                 quad_info QuadInfo = {
                     .Point = NewPoint,
                     .Map = Objs[0].Map,
-                    .Dir = QuadMapDir,
+                    .Dir = GetQuadMapDir(QuadMaps, QuadInfo.Map),
                     .Quad = -1,
                 };
                 QuadInfo = GetQuad(QuadMaps, QuadInfo);
@@ -657,9 +842,8 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 NewPoint = QuadInfo.Point;
                 int Quad = QuadInfo.Quad;
                 int NewQuadMap = QuadInfo.Map;
-                int NewQuadMapDir = QuadInfo.Dir; 
 
-                point StartPos = AddPoints(NewPoint, DirPoints[ReverseDir(Objs[0].Dir)]); 
+                point StartPos = AddPoints(NewPoint, g_DirPoints[ReverseDir(Objs[0].Dir)]); 
                 StartPos.X *= 16;
                 StartPos.Y *= 16;
 
@@ -712,12 +896,6 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                         memcpy(WindowMap[17], TextBoxFooterRow, sizeof(TextBoxFooterRow));
 
                         /*GetActiveText*/
-                        typedef struct text_ref {
-                            point Pos;
-                            const char *Text;
-                        } text_ref;
-
-
                         const char *ObjectText[] = {
                             "Technology is\nincredible!\f"
                             "You can now store\nand recall items\nand POKéMON as\ndata via PC!",
@@ -728,43 +906,14 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                             "We also carry\nPOKé BALLS for\ncatching POKéMON!"
                         };
 
-                        text_ref PalleteTextRefs[] = {
-                            {{3, 5}, "RED' house"},
-                            {{11, 5}, "BLUE' house"},
-                            {{7, 9}, "PALLETE TOWN\nShades of your\njourney awaits!"},
-                            {{13, 13}, "OAK POKéMON\nRESEARCH LAB"}
-                        };
-
-                        text_ref Route1Refs[] = {
-                            {{9, 27}, "ROUTE 1\nPALLETE TOWN -\nVIRIDIAN CITY"}
-                        };
-
-                        typedef struct text_ref_array {
-                            text_ref *Refs;
-                            int Count;
-                        } text_ref_array;
-
-                        text_ref_array TextRefs[WorldHeight][WorldWidth] = {
-                            {},
-                            {
-                                {Route1Refs, _countof(Route1Refs)}
-                            },
-                            { 
-                                {PalleteTextRefs, _countof(PalleteTextRefs)},
-                            }
-                        };
-
-                        point ActiveRefPoint = LoadedQuadMaps[NewQuadMap];
-                        text_ref_array ActiveRefs = TextRefs[ActiveRefPoint.Y][ActiveRefPoint.X];
-
                         if(ObjI < ObjCount) {
                             ActiveText = ObjectText[ObjI - 1];
                             Objs[ObjI].Dir = ReverseDir(Objs[0].Dir);
                         } else {
                             ActiveText = "No text found";
-                            for(int I = 0; I < ActiveRefs.Count; I++) {
-                                if(ComparePoints(ActiveRefs.Refs[I].Pos, NewPoint)) {
-                                    ActiveText = ActiveRefs.Refs[I].Text;
+                            for(int I = 0; I < QuadMaps[Objs[0].Map].Count; I++) {
+                                if(ComparePoints(QuadMaps[Objs[0].Map].Texts[I].Pos, NewPoint)) {
+                                    ActiveText = QuadMaps[Objs[0].Map].Texts[I].Data;
                                     break;
                                 }
                             }
@@ -775,12 +924,12 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
 
                         HasMoveKey = 0;
                     } else if(Prop & QuadPropWater) {
-                        if(Objs[0].Tile == 0) {
-                            Objs[0].Tile = 84;
+                        if(Objs[0].Tile == AnimPlayer) {
+                            Objs[0].Tile = AnimSeal;
                             HasMoveKey = 1;
                         } 
-                    } else if(Objs[0].Tile == 84 && !(Prop & QuadPropSolid)) {
-                        Objs[0].Tile = 0;
+                    } else if(Objs[0].Tile == AnimSeal && !(Prop & QuadPropSolid)) {
+                        Objs[0].Tile = AnimPlayer;
                         HasMoveKey = 1;
                     }
                 } 
@@ -820,41 +969,47 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 if(Objs[0].State == StateMoving) {
                     Objs[0].Pos = StartPos;
                     Objs[0].Map = NewQuadMap;
-                    QuadMapDir = NewQuadMapDir;
 
                     /*UpdateLoadedQuadMaps*/
-                    point AddTo = {};
-                    int NewQuadMapDir = -1;
+                    int AddToX = 0;
+                    int AddToY = 0;
                     if(NewPoint.X == 4) {
-                        AddTo.X = -1;
-                        NewQuadMapDir = DirLeft;
+                        AddToX = -1;
                     } else if(NewPoint.X == QuadMaps[Objs[0].Map].Width - 4) {
-                        AddTo.X = 1;
-                        NewQuadMapDir = DirRight;
-                    } else if(NewPoint.Y == 4) {
-                        AddTo.Y = -1;
-                        NewQuadMapDir = DirUp;
+                        AddToX = 1;
+                    } 
+                    if(NewPoint.Y == 4) {
+                        AddToY = -1;
                     } else if(NewPoint.Y == QuadMaps[Objs[0].Map].Height - 4) {
-                        AddTo.Y = 1;
-                        NewQuadMapDir = DirDown;
+                        AddToY = 1;
                     }
 
-
-                    if(AddTo.X || AddTo.Y) {
-                        point CurQuadMapPt = LoadedQuadMaps[Objs[0].Map];
+                    const char *LoadNextQuadMap(int DeltaX, int DeltaY) {
+                        const char *Path = NULL;
+                        point AddTo = {DeltaX, DeltaY};
+                        point CurQuadMapPt = QuadMaps[Objs[0].Map].Loaded;
                         point NewQuadMapPt = AddPoints(CurQuadMapPt, AddTo);
-                        if(!ComparePoints(LoadedQuadMaps[!Objs[0].Map], NewQuadMapPt)) {
+                        if(!ComparePoints(QuadMaps[!Objs[0].Map].Loaded, NewQuadMapPt)) {
                             if(NewQuadMapPt.X >= 0 && NewQuadMapPt.X < WorldWidth &&
                                NewQuadMapPt.Y >= 0 && NewQuadMapPt.Y < WorldHeight) {
-                                const char *Path = QuadMapPaths[NewQuadMapPt.Y][NewQuadMapPt.X];
+                                Path = QuadMapPaths[NewQuadMapPt.Y][NewQuadMapPt.X];
                                 if(Path) {
                                     ReadQuadMap(Path, &QuadMaps[!Objs[0].Map]); 
-                                    LoadedQuadMaps[!Objs[0].Map] = NewQuadMapPt;
-                                    QuadMapDir = NewQuadMapDir;
+                                    QuadMaps[!Objs[0].Map].Loaded = NewQuadMapPt;
                                 }
                             }
                         }
+                        return Path;
+                    }
+
+                    const char *Path = NULL;
+                    if(AddToX) {
+                        Path = LoadNextQuadMap(AddToX, 0);
                     } 
+
+                    if(AddToY && !Path) {
+                        LoadNextQuadMap(0, AddToY);
+                    }
 
                     /*TranslateQuadRectToTiles*/
                     int TileMinX = 0;
@@ -914,6 +1069,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
             int TmpQuadY = Objs[I].Pos.Y - Objs[0].Pos.Y + 72;
 
             if(Objs[0].Map != Objs[I].Map) {
+                /*
                 switch(QuadMapDir) {
                 case DirUp:
                     TmpQuadY -= QuadMaps[Objs[0].Map].Height * 16;
@@ -922,9 +1078,10 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                     TmpQuadY += QuadMaps[Objs[0].Map].Height * 16;
                     break;
                 }
+                */
             }
 
-            if(TmpQuadX > -16 && TmpQuadX < 176 && TmpQuadY > -16 && TmpQuadY < 160) {
+            if(TmpQuadX > -16 && TmpQuadX < 176 && TmpQuadY > -16 && TmpQuadY < BmWidth) {
                 uint8_t QuadX = TmpQuadX;
                 uint8_t QuadY = TmpQuadY;
                 if(Objs[I].Tick % 8 < 4) {
@@ -1007,7 +1164,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 if(!IsPaused) {
                     if(Objs[I].Tick > 0) {
                         if(Objs[I].State == StateMoving) {
-                            point DeltaPoint = DirPoints[Objs[I].Dir];
+                            point DeltaPoint = g_DirPoints[Objs[I].Dir];
                             DeltaPoint.X *= Objs[I].Speed;
                             DeltaPoint.Y *= Objs[I].Speed;
                             Objs[I].Pos = AddPoints(Objs[I].Pos, DeltaPoint);
@@ -1035,10 +1192,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                         if(Seed % 64 == 0) {
                             Objs[I].Dir = Seed / 64 % 4;
 
-                            /*GetFacingPoint*/
-                            point OldPoint = ConvertToQuadPoint(Objs[I].Pos);
-                            point DirPoint = DirPoints[Objs[I].Dir];
-                            point NewPoint = AddPoints(OldPoint, DirPoint);
+                            point NewPoint = GetFacingPoint(Objs[I].Pos, Objs[I].Dir);
 
                             /*FetchQuadProp*/
                             int Quad = -1;
@@ -1102,9 +1256,9 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         }
 
         /*RenderTiles*/
-        uint8_t *BmRow = BmPixels;
+        uint8_t *BmRow = g_BmPixels;
 
-        int MaxPixelY = WindowY < 144 ? WindowY : 144; 
+        int MaxPixelY = WindowY < BmHeight ? WindowY : BmHeight; 
 
         for(int PixelY = 0; PixelY < MaxPixelY; PixelY++) {
             int PixelX = 8 - (ScrollX & 7);
@@ -1121,11 +1275,11 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
             }
             TileX = (TileX + 1) % 32;
             uint8_t *Pixel = BmRow + PixelX;
-            memcpy(Pixel, TileData + SrcYDsp + TileMap[TileY][TileX] * TileSize, 160 - PixelX);
-            BmRow += 160;
+            memcpy(Pixel, TileData + SrcYDsp + TileMap[TileY][TileX] * TileSize, BmWidth - PixelX);
+            BmRow += BmWidth;
         }
 
-        for(int PixelY = MaxPixelY; PixelY < 144; PixelY++) {
+        for(int PixelY = MaxPixelY; PixelY < BmHeight; PixelY++) {
             int PixelX = 0;
             int SrcYDsp = (PixelY & 7) << 3;
             int TileX = 0;
@@ -1136,14 +1290,14 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 TileX++;
                 PixelX += 8;
             }
-            BmRow += 160;
+            BmRow += BmWidth;
         }
 
         /*RenderSprites*/
-        int MaxX = 160;
-        int MaxY = IsPaused ? 96 : 144;
+        int MaxX = BmWidth;
+        int MaxY = WindowY < BmHeight ? WindowY : BmHeight;
 
-        for(int I = _countof(Sprites); I-- > 0; ) {
+        for(size_t I = _countof(Sprites); I-- > 0; ) {
             int RowsToRender = 8;
             if(Sprites[I].Y < 8) {
                 RowsToRender = Sprites[I].Y;
@@ -1160,7 +1314,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
 
             int DestX = Max(Sprites[I].X - 8, 0);
             int DestY = Max(Sprites[I].Y - 8, 0);
-            uint8_t *Dest = BmPixels + DestY * 160 + DestX;
+            uint8_t *Dest = g_BmPixels + DestY * BmWidth + DestX;
 
             int SrcX = Max(8 - Sprites[I].X, 0);
             int DispX = 1;
@@ -1186,82 +1340,15 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                     Tile += DispX;
                 }
                 Src += DispY;
-                Dest += 160;
+                Dest += BmWidth;
             }
         }
 
-        /*UpdateFullscreen*/
-        if(g_IsFullscreen) {
-            RECT ClientRect;
-            GetClientRect(Window, &ClientRect);
-            HMONITOR Monitor = MonitorFromWindow(Window, MONITOR_DEFAULTTONEAREST);
-            MONITORINFO MonitorInfo = {
-                .cbSize = sizeof(MonitorInfo)
-            };
-            GetMonitorInfo(Monitor, &MonitorInfo);
-
-            int MonitorX = MonitorInfo.rcMonitor.left;
-            int MonitorY = MonitorInfo.rcMonitor.top;
-            int MonitorWidth = MonitorInfo.rcMonitor.right - MonitorX;
-            int MonitorHeight = MonitorInfo.rcMonitor.bottom - MonitorY;
-
-            if(MonitorWidth != ClientRect.right || MonitorHeight != ClientRect.bottom) {
-                SetWindowLongPtr(Window, GWL_STYLE, WS_POPUP | WS_VISIBLE);
-                SetWindowPos(Window, HWND_TOP, MonitorX, MonitorY,
-                             MonitorWidth, MonitorHeight, SWP_FRAMECHANGED | SWP_NOREPOSITION);
-            }
-        }
-
-        /*SleepTillNextFrame*/
-        if(g_Keys['E']) {
-            FrameDelta = PerfFreq.QuadPart / 300;
-        } else {
-            FrameDelta = PerfFreq.QuadPart / 30;
-        }
-        LARGE_INTEGER PerfCounter;
-        QueryPerformanceCounter(&PerfCounter);
-        int64_t DeltaCounter = PerfCounter.QuadPart - BeginCounter.QuadPart;
-        if(DeltaCounter < FrameDelta) {
-            if(IsGranular) {
-                int64_t RemainCounter = FrameDelta - DeltaCounter;
-                uint32_t SleepMS = 1000 * RemainCounter / PerfFreq.QuadPart;
-                if(SleepMS) {
-                    Sleep(SleepMS);
-                }
-            }
-            do {
-                QueryPerformanceCounter(&PerfCounter);
-                DeltaCounter = PerfCounter.QuadPart - BeginCounter.QuadPart;
-            } while(DeltaCounter < FrameDelta);
-        }
-
-        /*RenderFrame*/
-        HDC DeviceContext = GetDC(Window);
-        RECT ClientRect;
-        GetClientRect(Window, &ClientRect);
-        int ClientWidth = ClientRect.right;
-        int ClientHeight = ClientRect.bottom;
-
-        int RenderWidth = ClientWidth - ClientWidth % 160;
-        int RenderHeight = ClientHeight - ClientHeight % 144;
-
-        int RenderColSize = RenderWidth * 144;
-        int RenderRowSize = RenderHeight * 160;
-        if(RenderColSize > RenderRowSize) {
-            RenderWidth = RenderRowSize / 144;
-        } else {
-            RenderHeight = RenderColSize / 160;
-        }
-        int RenderX = (ClientWidth - RenderWidth) / 2;
-        int RenderY = (ClientHeight - RenderHeight) / 2;
-
-        StretchDIBits(DeviceContext, RenderX, RenderY, RenderWidth, RenderHeight,
-                      0, 0, 160, 144, BmPixels, BmInfo, DIB_RGB_COLORS, SRCCOPY);
-        PatBlt(DeviceContext, 0, 0, RenderX, ClientHeight, BLACKNESS);
-        PatBlt(DeviceContext, RenderX + RenderWidth, 0, RenderX, ClientHeight, BLACKNESS);
-        PatBlt(DeviceContext, RenderX, 0, RenderWidth, RenderY, BLACKNESS);
-        PatBlt(DeviceContext, RenderX, RenderY + RenderHeight, RenderWidth, RenderY + 1, BLACKNESS);
-        ReleaseDC(Window, DeviceContext);
+        /*NextFrame*/
+        UpdateClientSize(Window, g_IsFullscreen);
+        SleepTillNextFrame(IsGranular, PerfFreq, BeginCounter, FrameDelta); 
+        InvalidateRect(Window, NULL, FALSE);
+        UpdateWindow(Window);
 
         Tick++;
     }

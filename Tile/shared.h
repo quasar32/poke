@@ -8,7 +8,7 @@
 #define CountofQuadProp 3
 
 #define SizeOfQuadProps 64
-#define SizeOfQuadData 256
+#define SizeOfQuadData 512
 #define SizeOfQuadMapBytes 65536
 #define SizeOfCompressedTile 16
 
