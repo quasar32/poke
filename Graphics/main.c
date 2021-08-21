@@ -321,13 +321,16 @@ static HWND CreatePokeWindow(const char *WindowName, int ClientWidth, int Client
             Instance, /*Instance*/
             NULL /*Extra*/
         );
+        if(!Window) {
+            UnregisterClass(&WindowClass, Instance);
+        }
     }
     return Window;
 }
 
 __attribute__((nonnull(1, 3)))
 int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdShow) {
-    g_TileCount = ReadTileData("../Shared/TileData", g_TileData, _countof(g_TileData));
+    g_TileCount = ReadTileData("../Shared/TileData2", g_TileData, _countof(g_TileData));
     DrawSelected();
 
     HWND Window = CreatePokeWindow("PokeWindow", BITMAP_WIDTH, BITMAP_HEIGHT);

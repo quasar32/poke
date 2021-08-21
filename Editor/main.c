@@ -18,9 +18,17 @@
 #define TileLength 8
 #define TileSize 64
 
+#define SprHorzFlag 1
+#define SprVertFlag 2
+
+#define DirUp 0
+#define DirLeft 1
+#define DirRight 2
+#define DirDown 3
+
 #define LastIndex(Array) (_countof(Array) - 1)
 
-#define TEXT_COUNT 32
+#define TEXT_COUNT 16
 
 #define ATTRIBUTE(att) __attribute__((att))
 #define UNUSED ATTRIBUTE(unused)
@@ -34,8 +42,6 @@
 
 #define FirstLevelPallete {0xFFEFFF, 0xCEE7DE, 0xA5D6FF, 0x181010}
 
-/**/
-int g_DefaultQuad = 0;
 
 /*Generic Math Functions*/
 #define Swap(A, B) do {\
@@ -154,7 +160,6 @@ typedef struct text {
     point Pos;
     char Data[256];
     int Index;
-    int LineCount;
 } text;
 
 typedef struct area {
@@ -165,7 +170,7 @@ typedef struct area {
 typedef struct area_context {
     BOOL LockedMode;
     union {
-        struct area Areas[6];
+        struct area Areas[7];
         struct {
             area QuadDataArea;
             area TileDataArea;
@@ -173,6 +178,7 @@ typedef struct area_context {
             area TextArea;
             area DiagArea;
             area DefaultArea;
+            area SpriteArea;
         };
     };
     point QuadMapCam;
@@ -205,7 +211,23 @@ typedef struct shared_context {
     text *Texts;
 } shared_context;
 
+typedef struct sprite {
+    int16_t X;
+    int16_t Y;
+    uint8_t Tile;
+    uint8_t Flags;
+} sprite;
 
+typedef struct object {
+    uint8_t Tile; 
+    uint8_t Dir;
+    uint8_t Speed;
+    text Text;
+} object;
+
+/**/
+static object g_Objects[16];
+static int g_DefaultQuad = 0;
 
 /*Rect Functions*/
 static int RectRight(rect *Rect)  {
@@ -238,10 +260,27 @@ static point ClampPoint(point Point,  rect *Rect)  {
     return ClampPoint;
 }
 
-static point  AddPoints(point A, point B)  {
+static point AddPoints(point A, point B)  {
     point C = {
         .X = A.X + B.X,
         .Y = A.Y + B.Y
+    };
+    return C;
+}
+
+static point SubPoints(point A, point B) {
+    point C = {
+        .X = A.X - B.X,
+        .Y = A.Y - B.Y
+    };
+    return C;   
+}
+
+UNUSED
+static point DividePoint(point A, int Value) {
+    point C = {
+        .X = A.X / Value,
+        .Y = A.Y / Value
     };
     return C;
 }
@@ -384,6 +423,42 @@ static const char *StringifyBool(BOOL Bool) {
     return Bool ? "True" : "False";
 }
 
+/*SetStillAnimation*/
+static void SetStillAnimation(sprite SpriteQuad[4], int Tile, int Dir, point Location) {
+    switch(Dir) {
+    case DirUp:
+        SpriteQuad[0] = (sprite) {0, 0, 0, 0};
+        SpriteQuad[1] = (sprite) {8, 0, 0, SprHorzFlag};
+        SpriteQuad[2] = (sprite) {0, 8, 1, 0};
+        SpriteQuad[3] = (sprite) {8, 8, 1, SprHorzFlag};
+        break;
+    case DirLeft:
+        SpriteQuad[0] = (sprite) {0, 0, 4, 0};
+        SpriteQuad[1] = (sprite) {8, 0, 5, 0};
+        SpriteQuad[2] = (sprite) {0, 8, 6, 0};
+        SpriteQuad[3] = (sprite) {8, 8, 7, 0};
+        break;
+    case DirDown:
+        SpriteQuad[0] = (sprite) {0, 0, 10, 0};
+        SpriteQuad[1] = (sprite) {8, 0, 10, SprHorzFlag};
+        SpriteQuad[2] = (sprite) {0, 8, 11, 0};
+        SpriteQuad[3] = (sprite) {8, 8, 11, SprHorzFlag};
+        break;
+    case DirRight:
+        SpriteQuad[0] = (sprite) {0, 0, 5, SprHorzFlag};
+        SpriteQuad[1] = (sprite) {8, 0, 4, SprHorzFlag};
+        SpriteQuad[2] = (sprite) {0, 8, 7, SprHorzFlag};
+        SpriteQuad[3] = (sprite) {8, 8, 6, SprHorzFlag};
+        break;
+    }
+
+    for(int SpriteI = 0; SpriteI < 4; SpriteI++) {
+        SpriteQuad[SpriteI].X += Location.X;
+        SpriteQuad[SpriteI].Y += Location.Y;
+        SpriteQuad[SpriteI].Tile += Tile;
+    } 
+}
+
 /*Conversion*/
 UNUSED
 static point ConvertToQuadPoint(point Point) {
@@ -473,29 +548,37 @@ static BOOL ReadQuadMap(const char *Path, array_rect *QuadMap, text *Texts) {
 
     if(RunIndex < BytesRead) {
         g_DefaultQuad = RunData[RunIndex++];
+    } else {
+        EncodeSuccess = FALSE;
     }
 
     if(RunIndex < BytesRead) {
         int Count = RunData[RunIndex++];
 
-        for(int I = 0; I < Count; I++) {
-            if(RunIndex < BytesRead - 3) {
-                Texts[I].Pos.X = RunData[RunIndex++]; 
-                Texts[I].Pos.Y = RunData[RunIndex++];
-                Texts[I].Index = RunData[RunIndex++];
-                if(Texts[I].Index < _countof(Texts[I].Data)) {
-                    memcpy(Texts[I].Data, &RunData[RunIndex], Texts[I].Index);
-                    RunIndex += Texts[I].Index;
-                    Texts[I].Data[Texts[I].Index] = '\0';
-                    Texts[I].HasText = TRUE;
+        if(Count <= TEXT_COUNT) {
+            for(int I = 0; I < Count; I++) {
+                if(RunIndex < BytesRead - 3) {
+                    Texts[I].Pos.X = RunData[RunIndex++]; 
+                    Texts[I].Pos.Y = RunData[RunIndex++];
+                    Texts[I].Index = RunData[RunIndex++];
+                    if(Texts[I].Index < _countof(Texts[I].Data)) {
+                        memcpy(Texts[I].Data, &RunData[RunIndex], Texts[I].Index);
+                        RunIndex += Texts[I].Index;
+                        Texts[I].Data[Texts[I].Index] = '\0';
+                        Texts[I].HasText = TRUE;
+                    } else {
+                        Texts[I].Index = 0; 
+                        EncodeSuccess = FALSE;
+                    }   
                 } else {
-                    Texts[I].Index = 0; 
                     EncodeSuccess = FALSE;
-                }   
-            } else {
-                EncodeSuccess = FALSE;
-            }
-        } 
+                }
+            } 
+        } else {
+            EncodeSuccess = FALSE;
+        }
+    } else {
+        EncodeSuccess = FALSE;
     }
 
     BOOL Success = EncodeSuccess && QuadIndex == Size;
@@ -619,6 +702,11 @@ static uint32_t WriteQuadMap(const char *Path, array_rect *QuadMap, text *Texts)
             *Count = *Count + 1;
         }
     }
+
+    if(RunPtr - RunData >= 65536) {
+        return 0;
+    }
+    uint8_t *Count = RunPtr++;
     return WriteAll(Path, RunData, RunPtr - RunData);
 }
 
@@ -750,7 +838,12 @@ static rect GetMyClientRect(HWND Window) {
 
 static void SetMyWindowPos(HWND Window, rect *Rect, UINT WindowFlag) {
     SetWindowLongPtr(Window, GWL_STYLE, WindowFlag | WS_VISIBLE);
-    SetWindowPos(Window, HWND_TOP, Rect->X, Rect->Y, Rect->Width, Rect->Height, SWP_FRAMECHANGED | SWP_NOREPOSITION);
+    SetWindowPos(
+        Window, 
+        HWND_TOP, 
+        Rect->X, Rect->Y, Rect->Width, Rect->Height, 
+        SWP_FRAMECHANGED | SWP_NOREPOSITION
+    );
 }
 
 static void UpdateFullscreen(HWND Window) {
@@ -790,15 +883,23 @@ static HWND CreatePokeWindow(const char *WindowName, WNDPROC WndProc, int Client
 
         rect WindowRect = GetMyRect(&WinWindowRect);
 
-        Window = CreateWindow(WindowClass.lpszClassName, WindowName, WS_OVERLAPPEDWINDOW, 
-                CW_USEDEFAULT, CW_USEDEFAULT, WindowRect.Width, WindowRect.Height, NULL, 
-                NULL, Instance, NULL);
+        Window = CreateWindow(
+            WindowClass.lpszClassName, 
+            WindowName, 
+            WS_OVERLAPPEDWINDOW, 
+            CW_USEDEFAULT, CW_USEDEFAULT, WindowRect.Width, WindowRect.Height, 
+            NULL, 
+            NULL, 
+            Instance, 
+            NULL
+        );
     }
     return Window;
 }
 
 static void RenderOnscreen(HWND Window, HDC DeviceContext, 
-        int Width, int Height, void *Pixels, BITMAPINFO *BitmapInfo) {
+                           int Width, int Height, 
+                           void *Pixels, BITMAPINFO *BitmapInfo) {
     RECT ClientRect;
     GetClientRect(Window, &ClientRect);
     int ClientWidth = ClientRect.right;
@@ -817,8 +918,11 @@ static void RenderOnscreen(HWND Window, HDC DeviceContext,
     int RenderX = (ClientWidth - RenderWidth) / 2;
     int RenderY = (ClientHeight - RenderHeight) / 2;
 
-    StretchDIBits(DeviceContext, RenderX, RenderY, RenderWidth, RenderHeight, 
-            0, 0, Width, Height, Pixels, BitmapInfo, DIB_RGB_COLORS, SRCCOPY);
+    StretchDIBits(DeviceContext, 
+                  RenderX, RenderY, RenderWidth, RenderHeight, 
+                  0, 0, Width, Height, 
+                  Pixels, BitmapInfo, 
+                  DIB_RGB_COLORS, SRCCOPY);
     PatBlt(DeviceContext, 0, 0, RenderX, ClientHeight, BLACKNESS);
     PatBlt(DeviceContext, RenderX + RenderWidth, 0, RenderX, ClientHeight, BLACKNESS);
     PatBlt(DeviceContext, RenderX, 0, RenderWidth, RenderY, BLACKNESS);
@@ -833,6 +937,38 @@ static text *FindTextPt(text *Texts, point Point) {
             return Text;
         }
         Text++;
+    }
+    return NULL;
+}
+
+static object *FindObjectPt(point Point) {
+    object *Object = g_Objects;
+    for(int Index = 0; Index < _countof(g_Objects); Index++) {
+        if(Object->Text.HasText && ComparePoints(Object->Text.Pos, Point)) {
+            return Object;
+        }
+        Object++;
+    }
+    return NULL;
+}
+
+static object *AllocObject(point Point, int Tile, int Dir) {
+    if(!FindObjectPt(Point)) {
+        for(int Index = 0; Index < _countof(g_Objects); Index++) {
+            object *Object = &g_Objects[Index];
+            if(!Object->Text.HasText) {
+                *Object = (object) {
+                    .Tile = Tile,
+                    .Dir = Dir,
+                    .Speed = 1,
+                    .Text = {
+                        .HasText = TRUE,
+                        .Pos = Point
+                    }
+                };
+                return Object;
+            }
+        }
     }
     return NULL;
 }
@@ -853,8 +989,10 @@ static text *AllocText(text *Texts, point Point) {
 }
 
 static void ClearText(text *Texts) {
-   memset(Texts, 0, TEXT_COUNT * sizeof(*Texts)); 
+    memset(Texts, 0, TEXT_COUNT * sizeof(*Texts)); 
+    memset(g_Objects, 0, sizeof(g_Objects)); 
 }
+
 
 /*Section: Area*/
 static point GetRelativeQuadPoint(area *Area) {
@@ -972,9 +1110,9 @@ static void RenderQuadSelect(array_rect *Offscreen, int ColorIndex, int TileX, i
     memset(ArrayRectGet(Offscreen, X, Y + 15), ColorIndex, 16);
 }
 
-static void UpdateMyWindow(HWND Window, render_context *RenderContext) {
+static void UpdateMyWindow(HWND Window, int Width, int Height, void *Pixels, BITMAPINFO *Info) {
     PAINTSTRUCT Paint;
-    RenderOnscreen(Window, BeginPaint(Window, &Paint), RenderContext->Bitmap.Pixels.Width, RenderContext->Bitmap.Pixels.Height, RenderContext->Bitmap.Pixels.Bytes, &RenderContext->Bitmap.Info.WinStruct);
+    RenderOnscreen(Window, BeginPaint(Window, &Paint), Width, Height, Pixels, Info);
     EndPaint(Window, &Paint);
 }
 
@@ -1092,7 +1230,13 @@ static BOOL HandleMessages(HWND Window, UINT Message, WPARAM WParam, LPARAM LPar
         }
         break;
     case WM_PAINT:
-        UpdateMyWindow(Window, RenderContext);
+        UpdateMyWindow(
+            Window, 
+            RenderContext->Bitmap.Pixels.Width, 
+            RenderContext->Bitmap.Pixels.Height, 
+            RenderContext->Bitmap.Pixels.Bytes, 
+            &RenderContext->Bitmap.Info.WinStruct
+        );
         break;
     case WM_CHAR:
         RenderContext->ToRender = UpdateCommand(CommandContext, AreaContext, Texts, WParam);
@@ -1227,6 +1371,7 @@ static void ProcessComandContext(command_context *CommandContext, quad_context *
 
 int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine, int CommandShow) {
     uint8_t TileData[256 * 64] = {};
+    uint8_t SpriteData[256 * TileSize] = {};
     text Texts[TEXT_COUNT] = {};
     array_rect TileMap = CreateStaticArrayRect(67, 41);
 
@@ -1239,6 +1384,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
 
     int TileDataCount    = ReadTileData("TileData2", TileData, 256);
     ReadTileData("Numbers" , TileData + TileDataCount * TileSize, 256 - TileDataCount);
+    ReadTileData("SpriteData", SpriteData, 256);
 
     /*Area Setup*/
     area_context AreaContext = {
@@ -1252,11 +1398,11 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
         },
 
         .TileDataArea = {
-            .Rect.X = 1,
+            .Rect.X = 50,
             .Rect.Y = 34,
             .Rect.Width = 16,
             .Rect.Height = 6,
-            .Cursor.X = 1,
+            .Cursor.X = 50,
             .Cursor.Y = 34,
         },
 
@@ -1272,7 +1418,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
         .TextArea = {
             .Rect.X = 34,
             .Rect.Y = 34,
-            .Rect.Width = 16,
+            .Rect.Width = 15,
             .Rect.Height = 6,
             .Cursor.X = 34,
             .Cursor.Y = 34,
@@ -1294,6 +1440,15 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
             .Rect.Height = 1,
             .Cursor.X = 30,
             .Cursor.Y = 18,
+        },
+        
+        .SpriteArea = {
+            .Rect.X = 1,
+            .Rect.Y = 34,
+            .Rect.Width = 32,
+            .Rect.Height = 6,
+            .Cursor.X = 1,
+            .Cursor.Y = 34,
         }
     };
 
@@ -1353,6 +1508,14 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
             TileY++;
         }
     }
+    
+    /*Initalize SpriteArea*/
+    sprite Sprites[128] = {};
+    int SpriteCount = 64;
+    for(int QuadX = 0; QuadX < 8; QuadX++) {
+        point QuadPoint = {QuadX * 16 + 16, 280};
+        SetStillAnimation(&Sprites[QuadX * 4], QuadX * 14, DirDown, QuadPoint);
+    }
 
     /*Init Area Borders*/
     for(TileX = 1; TileX < 33; TileX++) {
@@ -1371,6 +1534,13 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
         *ArrayRectGet(&TileMap, 66, TileY) = 100;
     }
 
+    for(TileY = 34; TileY < 40; TileY++) {
+        *ArrayRectGet(&TileMap,  0, TileY) =  99;
+        *ArrayRectGet(&TileMap, 33, TileY) = 106;
+        *ArrayRectGet(&TileMap, 49, TileY) = 106;
+        *ArrayRectGet(&TileMap, 66, TileY) = 100;
+    }
+
     *ArrayRectGet(&TileMap,  0,  0) =  96;
     *ArrayRectGet(&TileMap,  0, 17) = 104;
     *ArrayRectGet(&TileMap,  0, 33) = 104;
@@ -1379,14 +1549,11 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
     *ArrayRectGet(&TileMap, 33, 17) = 110;
     *ArrayRectGet(&TileMap, 33, 33) = 109;
     *ArrayRectGet(&TileMap, 33, 40) = 108;
+    *ArrayRectGet(&TileMap, 49, 33) = 107;
+    *ArrayRectGet(&TileMap, 49, 40) = 108;
     *ArrayRectGet(&TileMap, 66,  0) =  98;
     *ArrayRectGet(&TileMap, 66, 33) = 105;
     *ArrayRectGet(&TileMap, 66, 40) = 103;
-    for(TileY = 34; TileY < 40; TileY++) {
-        *ArrayRectGet(&TileMap,  0, TileY) =  99;
-        *ArrayRectGet(&TileMap, 33, TileY) = 106;
-        *ArrayRectGet(&TileMap, 66, TileY) = 100;
-    }
 
     /*Window Creation*/
     HWND Window = CreatePokeWindow("PokéEditor", MyWndProc, RenderContext.Bitmap.Pixels.Width, RenderContext.Bitmap.Pixels.Height);
@@ -1410,6 +1577,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
     while(GetMessage(&Message, NULL, 0, 0)) {
         if(Message.message == WM_KEYDOWN) {
             BOOL WasCommandMode = CommandContext.CommandMode;
+            BOOL WasInsertMode = CommandContext.InsertMode;
             switch(Message.wParam) {
             case VK_ESCAPE:
                 CloseCommandContext(&CommandContext, "");
@@ -1514,44 +1682,85 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                         }
                         RenderContext.ToRender = TRUE;
                         break;
+                    case '2':
+                        if(AreaContext.LockedMode) {
+                            if(CurrentArea == &AreaContext.QuadDataArea) {
+                                CurrentArea = &AreaContext.SpriteArea; 
+                                RenderContext.ToRender = TRUE;
+                            } else if(CurrentArea == &AreaContext.SpriteArea) {
+                                CurrentArea = &AreaContext.QuadDataArea;
+                                RenderContext.ToRender = TRUE;
+                            }
+                        }
+                        break;
                     }
                 }
             }
-            if(GetAsyncKeyState(VK_RETURN) && !WasCommandMode) {
-                if(AreaContext.LockedMode) {
-                    if(CurrentArea == &AreaContext.QuadMapArea) {
-                        area *Area = &AreaContext.QuadDataArea;
-                        int SetX = (Area->Cursor.X - Area->Rect.X) / 2;
-                        int SetY = (Area->Cursor.Y - Area->Rect.Y) / 2;
-                        int SelectedQuadTile = SetX + SetY * 16;
 
-                        point PlacePt = GetPlacePoint(&AreaContext);
-                        uint8_t *PlacePtr = ArrayRectPt(&QuadMap, PlacePt);
-                        if(*PlacePtr != SelectedQuadTile) {
-                            if((*PlacePtr & QuadPropMessage) && !(SelectedQuadTile & QuadPropMessage)) {
-                                text *Text = FindTextPt(Texts, PlacePt); 
-                                if(Text) {
-                                    Text->HasText = FALSE;
-                                }
-                            }
-                            *PlacePtr = SelectedQuadTile;
-                            uint8_t *Tile = ArrayRectGet(&TileMap, CurrentArea->Cursor.X, CurrentArea->Cursor.Y);
-                            FillQuad(&TileMap, Tile, QuadData + SelectedQuadTile * 4);
-                            if(*PlacePtr & QuadPropMessage) {
-                                text *Text = AllocText(Texts, PlacePt);
-                                if(!Text) {
-                                    CloseCommandContext(&CommandContext, "OOM");
-                                }
-                            }
-                            CommandContext.Changed = TRUE;
+            if(!WasCommandMode && !WasInsertMode) {
+                if(GetAsyncKeyState(VK_BACK)) {
+                    if(AreaContext.LockedMode && NextArea == &AreaContext.SpriteArea) {
+                        object *Object = FindObjectPt(GetPlacePoint(&AreaContext)); 
+                        if(Object) {
+                            Object->Text.HasText = FALSE;
                         }
                     }
-                } else if(CurrentArea == &AreaContext.QuadDataArea) {
-                    EditQuadAtCursor(&QuadContext, &AreaContext, CurrentArea, NextArea);
+                    RenderContext.ToRender = TRUE;
+                } else if(GetAsyncKeyState(VK_RETURN)) {
+                    if(AreaContext.LockedMode) {
+                        if(CurrentArea == &AreaContext.QuadMapArea) {
+                            if(NextArea == &AreaContext.QuadDataArea) {
+                                /*PlaceQuad*/
+                                area *Area = &AreaContext.QuadDataArea;
+                                int SetX = (Area->Cursor.X - Area->Rect.X) / 2;
+                                int SetY = (Area->Cursor.Y - Area->Rect.Y) / 2;
+                                int SelectedQuadTile = SetX + SetY * 16;
+
+                                point PlacePt = GetPlacePoint(&AreaContext);
+                                uint8_t *PlacePtr = ArrayRectPt(&QuadMap, PlacePt);
+                                if(*PlacePtr != SelectedQuadTile) {
+                                    if((*PlacePtr & QuadPropMessage) && !(SelectedQuadTile & QuadPropMessage)) {
+                                        text *Text = FindTextPt(Texts, PlacePt); 
+                                        if(Text) {
+                                            Text->HasText = FALSE;
+                                        }
+                                    }
+                                    *PlacePtr = SelectedQuadTile;
+                                    uint8_t *Tile = ArrayRectGet(&TileMap, CurrentArea->Cursor.X, CurrentArea->Cursor.Y);
+                                    FillQuad(&TileMap, Tile, QuadData + SelectedQuadTile * 4);
+                                    if(*PlacePtr & QuadPropMessage) {
+                                        text *Text = AllocText(Texts, PlacePt);
+                                        if(!Text) {
+                                            CloseCommandContext(&CommandContext, "OOM");
+                                        }
+                                    }
+                                    CommandContext.Changed = TRUE;
+                                }
+                            } else {
+                                /*PlaceObject*/
+                                int SpriteSetI = (NextArea->Cursor.X - NextArea->Rect.X) / 2;
+                                point Place = GetPlacePoint(&AreaContext);
+                                if(GetQuadProp(&QuadMap, QuadProps, Place) != 0) {
+                                    CloseCommandContext(&CommandContext, "ERR: Invalid position");
+                                } else {
+                                    object *Object = AllocObject(Place, SpriteSetI * 14, DirDown);
+                                    if(!Object) { 
+                                        CloseCommandContext(&CommandContext, "OOM: Objects");
+                                    }
+                                }
+                                
+                                CommandContext.Changed = TRUE;
+                            }
+                        }
+                    } else if(CurrentArea == &AreaContext.QuadDataArea) {
+                        EditQuadAtCursor(&QuadContext, &AreaContext, CurrentArea, NextArea);
+                    }
+                    RenderContext.ToRender = TRUE;
                 }
-                RenderContext.ToRender = TRUE;
             }
         }
+
+
         FillQuad(&TileMap, ArrayRectPt(&TileMap, RectTopLeft(&AreaContext.DefaultArea.Rect)), &QuadData[g_DefaultQuad * 4]); 
         TranslateMessage(&Message);
         DispatchMessage(&Message);
@@ -1559,7 +1768,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
             if(CurrentArea == &AreaContext.QuadMapArea) {
                 point Place = GetPlacePoint(&AreaContext);
                 if(GetQuadProp(&QuadMap, QuadProps, Place) & QuadPropMessage) {
-                    const char *Data = "OOM";
+                    const char *Data = "OOM: Message";
                     text *Text = FindTextPt(Texts, Place);
                     if(Text) {
                         Data = Text->Data;
@@ -1592,7 +1801,69 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
             };
             PlaceFormattedText(&TileMap, &LastRow, ":%s", CommandContext.Command);
 
+            int MaxX = RenderContext.Bitmap.Pixels.Width;
+            int MaxY = RenderContext.Bitmap.Pixels.Height;
+
+            int PrevCount = SpriteCount;
+            for(int ObjI = 0; ObjI < _countof(g_Objects); ObjI++) {
+                point ObjPt = SubPoints(g_Objects[ObjI].Text.Pos, AreaContext.QuadMapCam);
+                if(g_Objects[ObjI].Text.HasText && ObjPt.X >= 0 && ObjPt.Y >= 0 && ObjPt.X < 16 && ObjPt.Y < 16) {
+                    point TilePoint = AddPoints(AddPoints(MultiplyPoint(ObjPt, 2), RectTopLeft(&AreaContext.QuadMapArea.Rect)), CreatePoint(1, 1));
+                    point SpritePoint = MultiplyPoint(TilePoint, 8);
+                    SetStillAnimation(&Sprites[SpriteCount], g_Objects[ObjI].Tile, g_Objects[ObjI].Dir, SpritePoint);
+                    SpriteCount += 4;
+                }
+            }
+
             RenderTiles(&RenderContext.Bitmap.Pixels, &TileMap, TileData, CreatePoint(0, 0));
+            for(size_t I = SpriteCount; I-- > 0; ) {
+                int RowsToRender = 8;
+                if(Sprites[I].Y < 8) {
+                    RowsToRender = Sprites[I].Y;
+                } else if(Sprites[I].Y > MaxY) {
+                    RowsToRender = Max(MaxY + 8 - Sprites[I].Y, 0);
+                }
+
+                int ColsToRender = 8;
+                if(Sprites[I].X < 8) {
+                    ColsToRender = Sprites[I].X;
+                } else if(Sprites[I].X > MaxX) {
+                    ColsToRender = Max(MaxX + 8 - Sprites[I].X, 0);
+                }
+
+                int DestX = Max(Sprites[I].X - 8, 0);
+                int DestY = Max(Sprites[I].Y - 8, 0);
+                uint8_t *Dest = RenderContext.Bitmap.Pixels.Bytes + DestY * RenderContext.Bitmap.Pixels.Width + DestX;
+
+                int SrcX = Max(8 - Sprites[I].X, 0);
+                int DispX = 1;
+                if(Sprites[I].Flags & SprHorzFlag) {
+                    SrcX = Min(Sprites[I].X, 7);
+                    DispX = -1;
+                }
+                int DispY = 8;
+                int SrcY = Max(8 - Sprites[I].Y, 0);
+                if(Sprites[I].Flags & SprVertFlag) {
+                    SrcY = Min(Sprites[I].Y, 7);
+                    DispY = -8;
+                }
+
+                uint8_t *Src = SpriteData + Sprites[I].Tile * TileSize + SrcY * TileLength + SrcX;
+
+                for(int Y = 0; Y < RowsToRender; Y++) {
+                    uint8_t *Tile = Src;
+                    for(int X = 0; X < ColsToRender; X++) {
+                        if(*Tile != 2) {
+                            Dest[X] = *Tile;
+                        }
+                        Tile += DispX;
+                    }
+                    Src += DispY;
+                    Dest += RenderContext.Bitmap.Pixels.Width;
+                }
+            }
+
+            SpriteCount = PrevCount;
 
             const int ColorIndexActive = 4;
             const int ColorIndexInactive = 5;

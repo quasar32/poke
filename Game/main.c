@@ -3,8 +3,10 @@
 #include <time.h>
 #include <windows.h>
 
+/*Attribute Wrappers*/
 #define UNUSED __attribute__((unused))
 
+/*Macro Constants*/
 #define AnimPlayer 0
 #define AnimSeal 84
 
@@ -28,11 +30,13 @@
 #define QuadPropWater   8
 #define CountofQuadProp 4
 
-#define SizeOfCompressedTile 16
 
 #define TileLength 8
 #define TileSize 64
 
+#define LParamKeyIsHeld 0x30000000
+
+/*Structures*/
 typedef struct point {
     short X;
     short Y;
@@ -44,6 +48,13 @@ typedef struct dim_rect {
     int Width;
     int Height;
 } dim_rect;
+
+typedef struct rect {
+    short Left;
+    short Top;
+    short Right;
+    short Bottom;
+} rect;
 
 typedef struct text {
     point Pos;
@@ -83,12 +94,9 @@ static const point g_DirPoints[] = {
     [DirRight] = {1, 0}
 };
 
-/*Globals*/
-static int g_IsFullscreen = 0;
-static int g_HasQuit = 0;
-static dim_rect g_RestoreRect = {};
+/*Globals (Shared between WinMain and WndProc)*/
 static uint8_t g_Keys[256] = {};
-static uint8_t g_BmPixels[160 * 144];
+static uint8_t g_BmPixels[BmWidth * BmHeight];
 static BITMAPINFO *g_BmInfo = NULL;
 
 /*Misc*/
@@ -97,32 +105,6 @@ static void CopyCharsWithNull(char *Dest, const char *Source, size_t Length) {
     memcpy(Dest, Source, Length);
     Dest[Length] = '\0';
 } 
-
-static int GetTileFromChar(int Char) {
-    int Output = Char;
-    if(Output >= '0' && Output <= ':') {
-        Output += 110 - '0';
-    } else if(Output >= 'A' && Output <= 'Z') {
-        Output += 121 - 'A';
-    } else if(Output >= 'a' && Output <= 'z') {
-        Output += 147 - 'a';
-    } else if(Output == '!') {
-        Output = 175;
-    } else if(Output == 'é') {
-        Output = 173;
-    } else if(Output == '\'') {
-        Output = 176;
-    } else if(Output == '~') {
-        Output = 179;
-    } else if(Char == '-') {
-        Output = 177;
-    } else if(Char == ',') {
-        Output = 180; 
-    } else {
-        Output = 0;
-    }
-    return Output;
-}
 
 static inline int ReverseDir(int Dir) {
     return (Dir + 2) % 4;
@@ -160,21 +142,6 @@ static int64_t GetPerfCounter(void) {
 static int64_t GetDeltaCounter(int64_t BeginCounter) {
     return GetPerfCounter() - BeginCounter;
 }
-
-static void SleepTillNextFrame(int IsGranular, int64_t PerfFreq, 
-                               int64_t BeginCounter, int64_t FrameDelta) {
-    int64_t InitDeltaCounter = GetDeltaCounter(BeginCounter);
-    if(InitDeltaCounter < FrameDelta) {
-        if(IsGranular) {
-            int64_t RemainCounter = FrameDelta - InitDeltaCounter;
-            uint32_t SleepMS = 1000 * RemainCounter / PerfFreq;
-            if(SleepMS) {
-                Sleep(SleepMS);
-            }
-        }
-        while(GetDeltaCounter(BeginCounter) < FrameDelta);
-    }
-} 
 
 /*Point Functions*/ 
 static point AddPoints(point A, point B)  {
@@ -309,6 +276,7 @@ static uint32_t ReadAll(const char *Path, void *Bytes, uint32_t BytesToRead) {
 }
 
 static int ReadTileData(const char *Path, uint8_t *TileData, int MaxTileCount) {
+    const int SizeOfCompressedTile = 16;
     int SizeOfCompressedTileData = MaxTileCount * SizeOfCompressedTile;
 
     uint8_t CompData[SizeOfCompressedTileData];
@@ -403,30 +371,6 @@ static int ReadQuadMap(const char *Path, quad_map *QuadMap) {
 }
 
 /*Win32 Functions*/
-static void RenderFrame(HWND Window, HDC DeviceContext) {
-    dim_rect ClientRect = GetDimClientRect(Window);
-
-    int RenderWidth = ClientRect.Width - ClientRect.Width % BmWidth;
-    int RenderHeight = ClientRect.Height - ClientRect.Height % BmHeight;
-
-    int RenderColSize = RenderWidth * BmHeight;
-    int RenderRowSize = RenderHeight * BmWidth;
-    if(RenderColSize > RenderRowSize) {
-        RenderWidth = RenderRowSize / BmHeight;
-    } else {
-        RenderHeight = RenderColSize / BmWidth;
-    }
-    int RenderX = (ClientRect.Width - RenderWidth) / 2;
-    int RenderY = (ClientRect.Height - RenderHeight) / 2;
-
-    StretchDIBits(DeviceContext, RenderX, RenderY, RenderWidth, RenderHeight,
-                  0, 0, BmWidth, BmHeight, g_BmPixels, g_BmInfo, DIB_RGB_COLORS, SRCCOPY);
-    PatBlt(DeviceContext, 0, 0, RenderX, ClientRect.Height, BLACKNESS);
-    PatBlt(DeviceContext, RenderX + RenderWidth, 0, RenderX, ClientRect.Height, BLACKNESS);
-    PatBlt(DeviceContext, RenderX, 0, RenderWidth, RenderY, BLACKNESS);
-    PatBlt(DeviceContext, RenderX, RenderY + RenderHeight, RenderWidth, RenderY + 1, BLACKNESS);
-}
-
 static void SetMyWindowPos(HWND Window, DWORD Style, dim_rect Rect) {
     SetWindowLongPtr(Window, GWL_STYLE, Style | WS_VISIBLE);
     SetWindowPos(Window, 
@@ -435,69 +379,45 @@ static void SetMyWindowPos(HWND Window, DWORD Style, dim_rect Rect) {
                  SWP_FRAMECHANGED | SWP_NOREPOSITION);
 }
 
-static void PaintFrame(HWND Window) {
-    PAINTSTRUCT Paint;
-    HDC DeviceContext = BeginPaint(Window, &Paint);
-    RenderFrame(Window, DeviceContext);
-    EndPaint(Window, &Paint);
-}
-
-void UpdateClientSize(HWND Window, int IsFullscreen) {
-    if(IsFullscreen) {
-        dim_rect ClientRect = GetDimClientRect(Window);
-
-        HMONITOR Monitor = MonitorFromWindow(Window, MONITOR_DEFAULTTONEAREST);
-        MONITORINFO MonitorInfo = {
-            .cbSize = sizeof(MonitorInfo)
-        };
-        GetMonitorInfo(Monitor, &MonitorInfo);
-
-        dim_rect MonitorRect = WinToDimRect(MonitorInfo.rcMonitor);
-
-        if(MonitorRect.Width != ClientRect.Width || MonitorRect.Height != ClientRect.Height) {
-            SetMyWindowPos(Window, WS_POPUP, MonitorRect);
-        }
-    }
-}
-
-static void ToggleFullscreen(HWND Window) {
-    ShowCursor(g_IsFullscreen);
-    if(g_IsFullscreen) {
-        SetMyWindowPos(Window, WS_OVERLAPPEDWINDOW, g_RestoreRect);
-    } else {
-        g_RestoreRect = GetDimWindowRect(Window);
-    }
-    g_IsFullscreen ^= 1;
-}
-
-static int IsFirstKeyFrame(LPARAM LParam) {
-    return LParam >> 30 == 0;
-}
-
 static LRESULT CALLBACK WndProc(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam) {
     switch(Message) {
+    case WM_DESTROY:
+        PostQuitMessage(0);
+        return 0;
     case WM_KILLFOCUS:
         memset(g_Keys, 0, sizeof(g_Keys));
         return 0;
     case WM_CLOSE:
-        g_HasQuit = 1;
+        DestroyWindow(Window);
         return 0;
     case WM_PAINT:
-        PaintFrame(Window);
-        return 0;
-    case WM_KEYDOWN:
-        switch(WParam) {
-        case VK_F11:
-            ToggleFullscreen(Window);
-            break;
-        default:
-            if(IsFirstKeyFrame(LParam)) {
-                g_Keys[WParam] = 1;
+        /*PaintFrame*/
+        {
+            PAINTSTRUCT Paint;
+            HDC DeviceContext = BeginPaint(Window, &Paint);
+            dim_rect ClientRect = GetDimClientRect(Window);
+
+            int RenderWidth = ClientRect.Width - ClientRect.Width % BmWidth;
+            int RenderHeight = ClientRect.Height - ClientRect.Height % BmHeight;
+
+            int RenderColSize = RenderWidth * BmHeight;
+            int RenderRowSize = RenderHeight * BmWidth;
+            if(RenderColSize > RenderRowSize) {
+                RenderWidth = RenderRowSize / BmHeight;
+            } else {
+                RenderHeight = RenderColSize / BmWidth;
             }
+            int RenderX = (ClientRect.Width - RenderWidth) / 2;
+            int RenderY = (ClientRect.Height - RenderHeight) / 2;
+
+            StretchDIBits(DeviceContext, RenderX, RenderY, RenderWidth, RenderHeight,
+                          0, 0, BmWidth, BmHeight, g_BmPixels, g_BmInfo, DIB_RGB_COLORS, SRCCOPY);
+            PatBlt(DeviceContext, 0, 0, RenderX, ClientRect.Height, BLACKNESS);
+            PatBlt(DeviceContext, RenderX + RenderWidth, 0, RenderX, ClientRect.Height, BLACKNESS);
+            PatBlt(DeviceContext, RenderX, 0, RenderWidth, RenderY, BLACKNESS);
+            PatBlt(DeviceContext, RenderX, RenderY + RenderHeight, RenderWidth, RenderY + 1, BLACKNESS);
+            EndPaint(Window, &Paint);
         }
-        return 0;
-    case WM_KEYUP:
-        g_Keys[WParam] = 0;
         return 0;
     }
     return DefWindowProc(Window, Message, WParam, LParam);
@@ -654,13 +574,11 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     uint8_t ScrollY = 0;
 
     /*TranslateFullQuadMapToTiles*/
-    void PlaceQuadMap(int QuadMinX, int QuadMinY, 
-                      int QuadMaxX, int QuadMaxY,
-                      int TileMinX, int TileMinY) {
-        int TileY = TileMinY;
-        for(int QuadY = QuadMinY; QuadY < QuadMaxY; QuadY++) {
-            int TileX = TileMinX;
-            for(int QuadX = QuadMinX; QuadX < QuadMaxX; QuadX++) {
+    void PlaceQuadMap(rect QuadRect, point TileMin) {
+        int TileY = TileMin.Y;
+        for(int QuadY = QuadRect.Top; QuadY < QuadRect.Bottom; QuadY++) {
+            int TileX = TileMin.X;
+            for(int QuadX = QuadRect.Left; QuadX < QuadRect.Right; QuadX++) {
                 quad_info QuadInfo = {
                     .Point = (point) {QuadX, QuadY},
                     .Map = Objs[0].Map,
@@ -678,21 +596,27 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         } 
     }
 
-    int QuadMinX = Objs[0].Pos.X / 16 - 4;
-    int QuadMinY = Objs[0].Pos.Y / 16 - 4;
-    int QuadMaxX = QuadMinX + 10;
-    int QuadMaxY = QuadMinY + 9;
-    PlaceQuadMap(QuadMinX, QuadMinY, QuadMaxX, QuadMaxY, 0, 0);
+    rect QuadRect = {
+        .Left = Objs[0].Pos.X / 16 - 4,
+        .Top = Objs[0].Pos.Y / 16 - 4,
+        .Right = QuadRect.Left + 10,
+        .Bottom = QuadRect.Top + 9
+    };
+    point TileMin = {};
+    PlaceQuadMap(QuadRect, TileMin);
 
     /*WindowMap*/
     uint8_t WindowMap[32][32];
     uint8_t WindowY = 144;
 
-    /*Misc*/
-    uint64_t Tick = 0;
-
+    /*PlayerState*/
     int IsLeaping = 0;
     int IsPaused = 0;
+    
+    /*NonGameState*/
+    dim_rect RestoreRect = {};
+    int HasQuit = 0;
+    int IsFullscreen = 0;
 
     /*Text*/
     const char *ActiveText = "Text not init";
@@ -700,6 +624,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     uint64_t TextTick = 0;
 
     /*Timing*/
+    uint64_t Tick = 0;
     int64_t BeginCounter = 0;
     int64_t PerfFreq = GetPerfFreq();
     int64_t FrameDelta = PerfFreq / 30;
@@ -726,7 +651,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
 
     /*MainLoop*/
     ShowWindow(Window, CmdShow);
-    while(!g_HasQuit) {
+    while(!HasQuit) {
         BeginCounter = GetPerfCounter();
 
         int TickCycle = Tick / 16;
@@ -734,8 +659,35 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         /*ProcessMessage*/
         MSG Message;
         while(PeekMessage(&Message, 0, 0, 0, PM_REMOVE)) {
-            TranslateMessage(&Message);
-            DispatchMessage(&Message);
+            switch(Message.message) {
+            case WM_QUIT:
+                HasQuit = 1;
+                break;
+            case WM_KEYDOWN:
+                switch(Message.wParam) {
+                case VK_F11:
+                    /*ToggleFullscreen*/
+                    ShowCursor(IsFullscreen);
+                    if(IsFullscreen) {
+                        SetMyWindowPos(Window, WS_OVERLAPPEDWINDOW, RestoreRect);
+                    } else {
+                        RestoreRect = GetDimWindowRect(Window);
+                    }
+                    IsFullscreen ^= 1;
+                    break;
+                default:
+                    if(!(Message.lParam & LParamKeyIsHeld)) {
+                        g_Keys[Message.wParam] = 1;
+                    }
+                }
+                break;
+            case WM_KEYUP:
+                g_Keys[Message.wParam] = 0;
+                break;
+            default:
+                TranslateMessage(&Message);
+                DispatchMessage(&Message);
+            }
         }
 
         /*InitSharedUpdate*/
@@ -785,6 +737,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                     }
                     break;
                 default:
+                    /*UpdateTextForNextChar*/
                     switch(ActiveText[0]) {
                     case '\n':
                         TextTilePt.X = 1;
@@ -795,7 +748,32 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                         TextTilePt.Y = 18;
                         break;
                     default:
-                        WindowMap[TextTilePt.Y][TextTilePt.X] = GetTileFromChar(ActiveText[0]);
+                        /*RenderNextChar*/
+                        {
+                            int Output = ActiveText[0];
+                            if(Output >= '0' && Output <= ':') {
+                                Output += 110 - '0';
+                            } else if(Output >= 'A' && Output <= 'Z') {
+                                Output += 121 - 'A';
+                            } else if(Output >= 'a' && Output <= 'z') {
+                                Output += 147 - 'a';
+                            } else if(Output == '!') {
+                                Output = 175;
+                            } else if(Output == 'é') {
+                                Output = 173;
+                            } else if(Output == '\'') {
+                                Output = 176;
+                            } else if(Output == '~') {
+                                Output = 179;
+                            } else if(Output == '-') {
+                                Output = 177;
+                            } else if(Output == ',') {
+                                Output = 180; 
+                            } else {
+                                Output = 0;
+                            }
+                            WindowMap[TextTilePt.Y][TextTilePt.X] = Output;
+                        }
                         TextTilePt.X++;
                     }
                     ActiveText++;
@@ -1012,52 +990,56 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                     }
 
                     /*TranslateQuadRectToTiles*/
-                    int TileMinX = 0;
-                    int TileMinY = 0;
-                    int QuadMinX = 0;
-                    int QuadMinY = 0; 
-                    int QuadMaxX = 0;
-                    int QuadMaxY = 0;
+                    point TileMin = {};
+                    rect QuadRect = {};
 
                     switch(Objs[0].Dir) {
                     case DirUp:
-                        TileMinX = (ScrollX / 8) & 31;
-                        TileMinY = (ScrollY / 8 + 30) & 31;
+                        TileMin.X = (ScrollX / 8) & 31;
+                        TileMin.Y = (ScrollY / 8 + 30) & 31;
 
-                        QuadMinX = NewPoint.X - 4;
-                        QuadMaxX = NewPoint.X + 6;
-                        QuadMinY = NewPoint.Y - 4; 
-                        QuadMaxY = NewPoint.Y - 3;
+                        QuadRect = (rect) {
+                            .Left = NewPoint.X - 4,
+                            .Top = NewPoint.Y - 4, 
+                            .Right = NewPoint.X + 6,
+                            .Bottom = NewPoint.Y - 3
+                        };
                         break;
                     case DirLeft:
-                        TileMinX = (ScrollX / 8 + 30) & 31;
-                        TileMinY = (ScrollY / 8) & 31;
+                        TileMin.X = (ScrollX / 8 + 30) & 31;
+                        TileMin.Y = (ScrollY / 8) & 31;
 
-                        QuadMinX = NewPoint.X - 4;
-                        QuadMaxX = NewPoint.X - 3;
-                        QuadMinY = NewPoint.Y - 4; 
-                        QuadMaxY = NewPoint.Y + 5;
+                        QuadRect = (rect) {
+                            .Left = NewPoint.X - 4,
+                            .Top = NewPoint.Y - 4,
+                            .Right = NewPoint.X - 3,
+                            .Bottom = NewPoint.Y + 5
+                        };
                         break;
                     case DirDown:
-                        TileMinX = (ScrollX / 8) & 31;
-                        TileMinY = (ScrollY / 8 + 18) & 31;
+                        TileMin.X = (ScrollX / 8) & 31;
+                        TileMin.Y = (ScrollY / 8 + 18) & 31;
 
-                        QuadMinX = NewPoint.X - 4;
-                        QuadMaxX = NewPoint.X + 6;
-                        QuadMinY = NewPoint.Y + 4;
-                        QuadMaxY = NewPoint.Y + (IsLeaping ? 6 : 5);
+                        QuadRect = (rect) {
+                            .Left = NewPoint.X - 4,
+                            .Top = NewPoint.Y + 4,
+                            .Right = NewPoint.X + 6,
+                            .Bottom = NewPoint.Y + (IsLeaping ? 6 : 5)
+                        };
                         break;
                     case DirRight:
-                        TileMinX = (ScrollX / 8 + 20) & 31;
-                        TileMinY = (ScrollY / 8) & 31;
+                        TileMin.X = (ScrollX / 8 + 20) & 31;
+                        TileMin.Y = (ScrollY / 8) & 31;
 
-                        QuadMinX = NewPoint.X + 5;
-                        QuadMaxX = NewPoint.X + 6;
-                        QuadMinY = NewPoint.Y - 4;
-                        QuadMaxY = NewPoint.Y + 5;
+                        QuadRect = (rect) {
+                            .Left = NewPoint.X + 5,
+                            .Top = NewPoint.Y - 4,
+                            .Right = NewPoint.X + 6,
+                            .Bottom = NewPoint.Y + 5
+                        };
                         break;
                     }
-                    PlaceQuadMap(QuadMinX, QuadMinY, QuadMaxX, QuadMaxY, TileMinX, TileMinY);
+                    PlaceQuadMap(QuadRect, TileMin);
                 }
             }
         }
@@ -1154,15 +1136,18 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                         Objs[I].IsRight ^= 1;
                     }
                 }
-                for(int InI = 0; InI < 4; InI++) {
-                    SpriteQuad[InI].X += QuadX;
-                    SpriteQuad[InI].Y += QuadY;
-                    SpriteQuad[InI].Tile += Objs[I].Tile;
+
+                /*SetSpriteQuad*/
+                for(int SpriteI = 0; SpriteI < 4; SpriteI++) {
+                    SpriteQuad[SpriteI].X += QuadX;
+                    SpriteQuad[SpriteI].Y += QuadY;
+                    SpriteQuad[SpriteI].Tile += Objs[I].Tile;
                 }
 
                 /*TickFrame*/
                 if(!IsPaused) {
                     if(Objs[I].Tick > 0) {
+                        /*MoveEntity*/
                         if(Objs[I].State == StateMoving) {
                             point DeltaPoint = g_DirPoints[Objs[I].Dir];
                             DeltaPoint.X *= Objs[I].Speed;
@@ -1194,7 +1179,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
 
                             point NewPoint = GetFacingPoint(Objs[I].Pos, Objs[I].Dir);
 
-                            /*FetchQuadProp*/
+                            /*FetchQuadPropSingleMap*/
                             int Quad = -1;
                             int Prop = QuadPropSolid;
                             int InHorzBounds = NewPoint.X >= 0 && NewPoint.X < QuadMaps[Objs[I].Map].Width;
@@ -1203,7 +1188,8 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                                 Quad = QuadMaps[Objs[I].Map].Quads[NewPoint.Y][NewPoint.X];
                                 Prop = QuadProps[Quad];
                             }
-
+                            
+                            /*IfWillColideWithPlayer*/
                             point PlayerCurPoint = ConvertToQuadPoint(Objs[0].Pos);
 
                             if(ComparePoints(PlayerCurPoint, NewPoint)) {
@@ -1216,6 +1202,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                                 }
                             }
 
+                            /*MoveEntity*/
                             if(!(Prop & QuadPropSolid)) {
                                 Objs[I].Tick = 16;
                                 Objs[I].State = StateMoving;
@@ -1227,6 +1214,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
             }
         }
 
+        /*SetUnusedSpritesInvisible*/
         for(int ClearI = SprI; ClearI < 36; ClearI++) {
             Sprites[ClearI].Y = 240;
         }
@@ -1344,12 +1332,39 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
             }
         }
 
+        /*UpdateFullscreen*/
+        if(IsFullscreen) {
+            dim_rect ClientRect = GetDimClientRect(Window);
+
+            HMONITOR Monitor = MonitorFromWindow(Window, MONITOR_DEFAULTTONEAREST);
+            MONITORINFO MonitorInfo = {
+                .cbSize = sizeof(MonitorInfo)
+            };
+            GetMonitorInfo(Monitor, &MonitorInfo);
+
+            dim_rect MonitorRect = WinToDimRect(MonitorInfo.rcMonitor);
+
+            if(MonitorRect.Width != ClientRect.Width || MonitorRect.Height != ClientRect.Height) {
+                SetMyWindowPos(Window, WS_POPUP, MonitorRect);
+            }
+        }
+
+        /*SleepTillNextFrame*/
+        int64_t InitDeltaCounter = GetDeltaCounter(BeginCounter);
+        if(InitDeltaCounter < FrameDelta) {
+            if(IsGranular) {
+                int64_t RemainCounter = FrameDelta - InitDeltaCounter;
+                uint32_t SleepMS = 1000 * RemainCounter / PerfFreq;
+                if(SleepMS) {
+                    Sleep(SleepMS);
+                }
+            }
+            while(GetDeltaCounter(BeginCounter) < FrameDelta);
+        }
+
         /*NextFrame*/
-        UpdateClientSize(Window, g_IsFullscreen);
-        SleepTillNextFrame(IsGranular, PerfFreq, BeginCounter, FrameDelta); 
         InvalidateRect(Window, NULL, FALSE);
         UpdateWindow(Window);
-
         Tick++;
     }
 
