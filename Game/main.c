@@ -6,6 +6,15 @@
 /*Attribute Wrappers*/
 #define UNUSED __attribute__((unused))
 
+/*Monad macros*/
+#define IF_ERROR(cond, str) do {\
+    if(cond) {\
+        LogError(str);\
+        Success = 0;\
+        goto out;\
+    }}\
+while(0)\
+
 /*Macro Constants*/
 #define AnimPlayer 0
 #define AnimSeal 84
@@ -29,7 +38,6 @@
 #define QuadPropMessage 4
 #define QuadPropWater   8
 #define CountofQuadProp 4
-
 
 #define TileLength 8
 #define TileSize 64
@@ -85,6 +93,21 @@ typedef struct quad_info {
     int Dir;
     int Quad;
 } quad_info;
+
+typedef struct object {
+    point Pos;
+
+    uint8_t Dir;
+    uint8_t Speed;
+    uint8_t Tile;
+
+    uint8_t State;
+    uint8_t Map;
+    uint8_t IsRight;
+    uint8_t Tick;
+
+    const char *Text;
+} object;
 
 /*Global Constants*/
 static const point g_DirPoints[] = {
@@ -264,12 +287,46 @@ static quad_info GetQuad(quad_map QuadMaps[2], quad_info QuadInfo) {
 }
 
 /*Data loaders*/
-static uint32_t ReadAll(const char *Path, void *Bytes, uint32_t BytesToRead) {
+static void LogError(const char *Error) {
+    MessageBox(NULL, Error, "Error", MB_ICONERROR);
+}
+
+static int64_t GetFullFileSize(HANDLE FileHandle) {
+    LARGE_INTEGER FileSize;
+    if(!GetFileSizeEx(FileHandle, &FileSize)) {
+        FileSize.QuadPart = -1;
+        LogError("GetFullFileSize: Could not obtain file size");
+    }
+    return FileSize.QuadPart;
+}
+
+static int ReadAll(const char *Path, void *Bytes, int BytesToRead) {
     DWORD BytesRead = 0;
     HANDLE FileHandle = CreateFile(Path, GENERIC_READ, FILE_SHARE_READ, 
                                    NULL, OPEN_EXISTING, 0, NULL);
+    if(FileHandle == INVALID_HANDLE_VALUE) { 
+        LogError("ReadAll: File could not be found"); 
+        BytesRead = -1;
+        goto out;
+    } 
+
+    int64_t FileSize = GetFullFileSize(FileHandle);
+    if(FileSize >= 0 && FileSize > BytesToRead) {
+        LogError("ReadAll: File is too big for buffer");
+        BytesRead = -1;
+        goto out;
+    } 
+
+    ReadFile(FileHandle, Bytes, BytesToRead, &BytesRead, NULL); 
+    if(BytesRead < FileSize) {
+        LogError("ReadAll: Could not read all of file");
+        BytesRead = -1;
+        goto out;
+
+    }
+
+out:
     if(FileHandle != INVALID_HANDLE_VALUE) {
-        ReadFile(FileHandle, Bytes, BytesToRead, &BytesRead, NULL);
         CloseHandle(FileHandle);
     }
     return BytesRead;
@@ -298,33 +355,36 @@ static int ReadTileData(const char *Path, uint8_t *TileData, int MaxTileCount) {
 
 static int ReadQuadMap(const char *Path, quad_map *QuadMap) {
     uint8_t RunData[65536];
-    uint32_t BytesRead = ReadAll(Path, RunData, sizeof(RunData));
+    int BytesRead = ReadAll(Path, RunData, sizeof(RunData));
 
-    int EncodeSuccess = 1;
-    uint32_t RunIndex = 2;
+    int Success = 1;
+    IF_ERROR(BytesRead < 0, "ReadQuadMap: Could not read buffer");
+
+    int RunIndex = 2;
+    /*ReadQuadSize*/
+    IF_ERROR(RunIndex >= BytesRead, "ReadQuadMap: Could not find size");
+
+    QuadMap->Width = RunData[0] + 1;
+    QuadMap->Height = RunData[1] + 1;
+
+    int Size = QuadMap->Width * QuadMap->Height;
 
     /*ReadQuads*/
     int QuadIndex = 0;
-    QuadMap->Width = RunData[0] + 1;
-    QuadMap->Height = RunData[1] + 1;
-    int Size = QuadMap->Width * QuadMap->Height;
-    while(EncodeSuccess && QuadIndex < Size && RunIndex < BytesRead) {
+
+    while(Success && QuadIndex < Size && RunIndex < BytesRead) {
         int QuadRaw = RunData[RunIndex++];
         int Quad = QuadRaw & 127;
         int Repeat = 0;
 
         if(Quad == QuadRaw) {
             Repeat = 1;
-        } else if(RunIndex < BytesRead) {
+        } else { 
+            IF_ERROR(RunIndex >= BytesRead, "ReadQuadMap: RLE pair missing repeat count");
             Repeat = RunData[RunIndex++] + 1;
         }
 
-        if(QuadIndex + Repeat > Size) {
-            Repeat = 0;
-        }
-        if(Repeat == 0) {
-            EncodeSuccess = 0;
-        }
+        IF_ERROR(QuadIndex + Repeat > Size, "ReadQuadMap: Quads are truncated");
 
         for(int I = QuadIndex; I < QuadIndex + Repeat; I++) {
             QuadMap->Quads[I / QuadMap->Width][I % QuadMap->Width] = Quad; 
@@ -333,40 +393,46 @@ static int ReadQuadMap(const char *Path, quad_map *QuadMap) {
         QuadIndex += Repeat;
     }
 
+    IF_ERROR(QuadIndex < Size, "ReadQuadMap: Quads are incomplete");
+
     /*DefaultQuad*/
-    if(RunIndex < BytesRead) {
-        QuadMap->DefaultQuad = RunData[RunIndex++];
-    }
+    IF_ERROR(RunIndex >= BytesRead, "ReadQuadMap: Could not find default quad");
+    IF_ERROR(QuadMap->DefaultQuad >= 128, "ReadQuadMap: Out of bounds default quad");
+    QuadMap->DefaultQuad = RunData[RunIndex++];
 
     /*ReadText*/
-    if(RunIndex < BytesRead) {
-        QuadMap->Count = RunData[RunIndex++];
+    IF_ERROR(RunIndex >= BytesRead, "ReadQuadMap: Text could not be found");
 
-        for(int TextIndex = 0; TextIndex < QuadMap->Count && EncodeSuccess; ) {
-            if(RunIndex < BytesRead - 3) {
-                int X = RunData[RunIndex++]; 
-                int Y = RunData[RunIndex++];
-                size_t Length = RunData[RunIndex++];
-                if(Length < _countof(QuadMap->Texts[TextIndex].Data)) {
-                    QuadMap->Texts[TextIndex].Pos.X = X;
-                    QuadMap->Texts[TextIndex].Pos.Y = Y;
-                    QuadMap->Texts[TextIndex].Length = Length;
-                    CopyCharsWithNull(QuadMap->Texts[TextIndex].Data, (char *) &RunData[RunIndex], Length);
+    QuadMap->Count = RunData[RunIndex++];
+    IF_ERROR(QuadMap->Count > _countof(QuadMap->Texts), "ReadQuadMap: Too many texts");
 
-                    RunIndex += Length;
-                    TextIndex++;
-                } else {
-                    QuadMap->Count--;
-                    EncodeSuccess = 0;
-                }   
-            } else {
-                QuadMap->Count = TextIndex;
-                EncodeSuccess = 0;
-            }
-        } 
-    }
+    for(int TextIndex = 0; TextIndex < QuadMap->Count && Success; ) {
+        IF_ERROR(RunIndex > BytesRead - 3, "ReadQuadMap: Text truncated");
+        int X = RunData[RunIndex++]; 
+        int Y = RunData[RunIndex++];
+        size_t Length = RunData[RunIndex++];
+        IF_ERROR(Length >= _countof(QuadMap->Texts[0].Data), "ReadQuadMap: Text is too long");
 
-    int Success = EncodeSuccess && QuadIndex == Size;
+        text *Text = &QuadMap->Texts[TextIndex];
+        Text->Pos.X = X;
+        Text->Pos.Y = Y;
+        Text->Length = Length;
+        CopyCharsWithNull(Text->Data, (char *) &RunData[RunIndex], Length);
+
+        RunIndex += Length;
+        TextIndex++;
+    } 
+
+    /*ReadEntities*/
+    IF_ERROR(RunIndex < BytesRead, "ReadQuadMap: Extraneous data present");
+    
+
+    /*Out*/
+out:
+    if(!Success) {
+        memset(QuadMap, 0, sizeof(*QuadMap));
+    } 
+
     return Success;
 }
 
@@ -517,20 +583,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     ReadQuadMap("PalleteTown", &QuadMaps[0]);
 
     /*InitObjects*/
-    struct object {
-        point Pos;
-
-        uint8_t Dir;
-        uint8_t State;
-        uint8_t Speed;
-        uint8_t Tile;
-
-        uint8_t Map;
-        uint8_t IsRight;
-        uint8_t Tick;
-
-        const char *Text;
-    } Objs[] = {
+    object Objs[] = {
         {
             .Pos = {80, 96},
             .Dir = DirDown,
@@ -540,19 +593,23 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         }, 
         
         {
+            /*
             .Pos = {176, 224},
             .Dir = DirDown,
             .Speed = 1,
             .Tile = 14,
             .Map = 0
+            */
         },
 
         {
+            /*
             .Pos = {48, 128},
             .Dir = DirDown,
             .Speed = 1,
             .Tile = 28,
             .Map = 0,
+            */
         },
 
         {

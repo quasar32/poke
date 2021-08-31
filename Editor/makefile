@@ -1,2 +1,2 @@
 output:
-	gcc main.c -mwindows -Wall
+	gcc main.c -mwindows -Wall -g

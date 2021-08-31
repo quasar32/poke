@@ -557,7 +557,7 @@ static BOOL ReadQuadMap(const char *Path, array_rect *QuadMap, text *Texts) {
 
         if(Count <= TEXT_COUNT) {
             for(int I = 0; I < Count; I++) {
-                if(RunIndex < BytesRead - 3) {
+                if(RunIndex < BytesRead - 2) {
                     Texts[I].Pos.X = RunData[RunIndex++]; 
                     Texts[I].Pos.Y = RunData[RunIndex++];
                     Texts[I].Index = RunData[RunIndex++];
@@ -568,6 +568,38 @@ static BOOL ReadQuadMap(const char *Path, array_rect *QuadMap, text *Texts) {
                         Texts[I].HasText = TRUE;
                     } else {
                         Texts[I].Index = 0; 
+                        EncodeSuccess = FALSE;
+                    }   
+                } else {
+                    EncodeSuccess = FALSE;
+                }
+            } 
+        } else {
+            EncodeSuccess = FALSE;
+        }
+    } else {
+        EncodeSuccess = FALSE;
+    }
+
+    if(RunIndex < BytesRead) {
+        int Count = RunData[RunIndex++];
+
+        if(Count <= _countof(g_Objects)) {
+            for(int I = 0; I < Count; I++) {
+                if(RunIndex < BytesRead - 5) {
+                    g_Objects[I].Text.Pos.X = RunData[RunIndex++];
+                    g_Objects[I].Text.Pos.Y = RunData[RunIndex++];
+                    g_Objects[I].Dir = RunData[RunIndex++];
+                    g_Objects[I].Speed = RunData[RunIndex++];
+                    g_Objects[I].Tile = RunData[RunIndex++];
+                    g_Objects[I].Text.Index = RunData[RunIndex++];
+                    if(g_Objects[I].Text.Index < _countof(g_Objects[I].Text.Data)) {
+                        memcpy(g_Objects[I].Text.Data, &RunData[RunIndex], g_Objects[I].Text.Index);
+                        RunIndex += g_Objects[I].Text.Index;
+                        g_Objects[I].Text.Data[g_Objects[I].Text.Index] = '\0';
+                        g_Objects[I].Text.HasText = TRUE;
+                    } else {
+                        g_Objects[I].Text.Index = 0; 
                         EncodeSuccess = FALSE;
                     }   
                 } else {
@@ -706,7 +738,27 @@ static uint32_t WriteQuadMap(const char *Path, array_rect *QuadMap, text *Texts)
     if(RunPtr - RunData >= 65536) {
         return 0;
     }
-    uint8_t *Count = RunPtr++;
+    Count = RunPtr++;
+    *Count = 0;
+    for(int I = 0; I < _countof(g_Objects); I++) {
+        if(g_Objects[I].Text.HasText) {
+            if(RunPtr - RunData + g_Objects[I].Text.Index >= 65530) {
+                return 0;
+            } 
+
+            *RunPtr++ = g_Objects[I].Text.Pos.X;
+            *RunPtr++ = g_Objects[I].Text.Pos.Y;
+            *RunPtr++ = g_Objects[I].Dir;
+            *RunPtr++ = g_Objects[I].Speed;
+            *RunPtr++ = g_Objects[I].Tile;
+            *RunPtr++ = g_Objects[I].Text.Index;
+
+            memcpy(RunPtr, g_Objects[I].Text.Data, g_Objects[I].Text.Index);
+            RunPtr += g_Objects[I].Text.Index;
+            *Count = *Count + 1;
+        }
+    }
+
     return WriteAll(Path, RunData, RunPtr - RunData);
 }
 
@@ -1698,7 +1750,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
             }
 
             if(!WasCommandMode && !WasInsertMode) {
-                if(GetAsyncKeyState(VK_BACK)) {
+                if(GetAsyncKeyState(VK_BACK) & 1) {
                     if(AreaContext.LockedMode && NextArea == &AreaContext.SpriteArea) {
                         object *Object = FindObjectPt(GetPlacePoint(&AreaContext)); 
                         if(Object) {
@@ -1706,7 +1758,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                         }
                     }
                     RenderContext.ToRender = TRUE;
-                } else if(GetAsyncKeyState(VK_RETURN)) {
+                } else if(GetAsyncKeyState(VK_RETURN) & 1) {
                     if(AreaContext.LockedMode) {
                         if(CurrentArea == &AreaContext.QuadMapArea) {
                             if(NextArea == &AreaContext.QuadDataArea) {
