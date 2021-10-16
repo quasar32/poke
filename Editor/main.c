@@ -752,6 +752,7 @@ static uint32_t WriteQuadMap(const char *Path, array_rect *QuadMap, text *Texts)
             *RunPtr++ = g_Objects[I].Speed;
             *RunPtr++ = g_Objects[I].Tile;
             *RunPtr++ = g_Objects[I].Text.Index;
+            g_Objects[I].Text.HasText = TRUE;
 
             memcpy(RunPtr, g_Objects[I].Text.Data, g_Objects[I].Text.Index);
             RunPtr += g_Objects[I].Text.Index;
@@ -783,7 +784,7 @@ static int WriteChar(uint8_t *Tile, int Char, BOOL Format, int IsFirst) {
     } else if(Output == '-') {
         Output = 178;
     } else if(Output == '~') {
-        Output = 179;
+        Output = 180;
     } else if(Output == '-') {
         Output = 177;
     } else if(Output == ',') {
@@ -1171,7 +1172,7 @@ static void UpdateMyWindow(HWND Window, int Width, int Height, void *Pixels, BIT
 static BOOL CharIsValid(char Char, int Index, int Size, BOOL SupportSpecial) {
     BOOL CharIsValid = IsAlphaNumeric(Char) || Char == ' ' || Char == '!' || Char == 'é';
     if(SupportSpecial) {
-        CharIsValid |= Char == '\'' || Char == '\f' || Char == '-' || Char == '\n' || Char == ',' || Char == '.';
+        CharIsValid |= Char == '\'' || Char == '\f' || Char == '-' || Char == '\n' || Char == ',' || Char == '.' || Char == '~';
     }
     BOOL CharCanFit = Index + 1 < Size;
     return CharIsValid && CharCanFit;
@@ -1228,6 +1229,12 @@ static text *GetTextPlace(area_context *AreaContext, text *Texts) {
     if(AreaContext->LockedMode) {
         point PlacePt = GetPlacePoint(AreaContext);
         Text = FindTextPt(Texts, PlacePt); 
+        if(!Text) {
+            object *Object = FindObjectPt(GetPlacePoint(AreaContext)); 
+            if(Object) { 
+                Text = &Object->Text;
+            }
+        }
     }
     return Text;
 }
@@ -1314,7 +1321,7 @@ static uint8_t *GetCurrentQuadPropPtr(area *Area, uint8_t *QuadProps) {
     return PropPtr;
 }
 
-static void g_DefaultQuadMap(array_rect *QuadMap) {
+static void DefaultQuadMap(array_rect *QuadMap) {
     QuadMap->Width = 16;
     QuadMap->Height = 16;
     memset(QuadMap->Bytes, 0, QuadMap->Width * QuadMap->Height);
@@ -1392,7 +1399,7 @@ static void ProcessComandContext(command_context *CommandContext, quad_context *
         strcpy(QuadMapPath, CommandContext->Command + 2);
         ClearText(Texts);
         if(!ReadQuadMap(CommandContext->Command + 2, QuadContext->QuadMap, Texts)) {
-            g_DefaultQuadMap(QuadContext->QuadMap);
+            DefaultQuadMap(QuadContext->QuadMap);
             ClearText(Texts);
         }
         AreaContext->QuadMapCam = CreatePoint(0, 0);
@@ -1534,11 +1541,11 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
     if(*QuadMapPath) {
         if(!ReadQuadMap(QuadMapPath, &QuadMap, Texts)) {
             strcpy(CommandContext.Command, "Error");
-            g_DefaultQuadMap(&QuadMap);
+            DefaultQuadMap(&QuadMap);
             ClearText(Texts);
         }
     } else {
-        g_DefaultQuadMap(&QuadMap);
+        DefaultQuadMap(&QuadMap);
     }
 
     quad_context QuadContext = {
@@ -1819,9 +1826,9 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
         if(RenderContext.ToRender) {
             if(CurrentArea == &AreaContext.QuadMapArea) {
                 point Place = GetPlacePoint(&AreaContext);
-                if(GetQuadProp(&QuadMap, QuadProps, Place) & QuadPropMessage) {
+                text *Text = GetTextPlace(&AreaContext, Texts);
+                if(Text) {
                     const char *Data = "OOM: Message";
-                    text *Text = FindTextPt(Texts, Place);
                     if(Text) {
                         Data = Text->Data;
                     } else {

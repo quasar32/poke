@@ -1,19 +1,46 @@
+#include <assert.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <time.h>
 #include <windows.h>
 
+/*Fixed Capacity Vector Macros*/
+#define FC_VEC(Type, Size) struct {\
+    int Count;\
+    Type Data[Size];\
+}
+
+#define CREATE_VEC_I(Vec) ({\
+    FC_VEC_I(_typeof((Vec)->Data), _countof((Vec)->Count))\
+})
+
 /*Attribute Wrappers*/
+#define NONNULL_PARAMS __attribute((nonnull))
 #define UNUSED __attribute__((unused))
 
+#define MAX_WORLD_WIDTH 1
+#define MAX_WORLD_HEIGHT 4 
+
 /*Monad macros*/
-#define IF_ERROR(cond, str) do {\
-    if(cond) {\
-        LogError(str);\
-        Success = 0;\
+#define TRY(Cond, Str) do {\
+    if(!(Cond)) {\
+        LogError(__func__, Str);\
         goto out;\
-    }}\
-while(0)\
+    }\
+} while(0)
+
+#define TRY_HERE(Cond, Str) do {\
+    if(!(Cond)) {\
+        LogError(__func__, Str);\
+    }\
+} while(0)
+
+#define FOR_RANGE(Var, Ptr, BeginI, EndI) \
+    for(typeof(*Ptr) *Var = (Ptr) + (BeginI), *End_ = Var + (EndI); Var < End_; Var++) 
+
+#define FOR_ARY(Var, Ary) FOR_RANGE(Var, (Ary), 0, _countof(Ary)) 
+#define FOR_VEC(Var, Vec) FOR_RANGE(Var, (Vec).Data, 0, (Vec).Count)
 
 /*Macro Constants*/
 #define AnimPlayer 0
@@ -50,6 +77,7 @@ typedef struct point {
     short Y;
 } point;
 
+
 typedef struct dim_rect {
     int X;
     int Y;
@@ -66,19 +94,32 @@ typedef struct rect {
 
 typedef struct text {
     point Pos;
-    int Length;
-    char Data[256];
+    FC_VEC(char, 256) Str;
 } text;
 
-typedef struct quad_map {
+typedef struct object {
+    point Pos;
+
+    uint8_t Dir;
+    uint8_t Speed;
+    uint8_t Tile;
+
+    uint8_t State;
+    uint8_t IsRight;
+    uint8_t Tick;
+
+    FC_VEC(char, 256) Str;
+} object;
+
+typedef struct map {
     int16_t Width;
     int16_t Height;
     int16_t DefaultQuad;
-    int16_t Count;
     uint8_t Quads[256][256];
     point Loaded;
-    text Texts[256]; 
-} quad_map;
+    FC_VEC(text, 256) Texts;
+    FC_VEC(object, 256) Objects;
+} map;
 
 typedef struct sprite {
     uint8_t X;
@@ -94,20 +135,13 @@ typedef struct quad_info {
     int Quad;
 } quad_info;
 
-typedef struct object {
-    point Pos;
+typedef struct error { 
+    const char *Func;
+    const char *Error;
+} error;
 
-    uint8_t Dir;
-    uint8_t Speed;
-    uint8_t Tile;
-
-    uint8_t State;
-    uint8_t Map;
-    uint8_t IsRight;
-    uint8_t Tick;
-
-    const char *Text;
-} object;
+/*Reusable Vec*/
+typedef FC_VEC(sprite, 64) sprite_output;
 
 /*Global Constants*/
 static const point g_DirPoints[] = {
@@ -117,25 +151,38 @@ static const point g_DirPoints[] = {
     [DirRight] = {1, 0}
 };
 
+static const point NextPoints[] = {
+    [DirUp] = {0, 1},
+    [DirLeft] = {1, 0},
+    [DirDown] = {0, 1},
+    [DirRight] = {1, 0}
+};
+
 /*Globals (Shared between WinMain and WndProc)*/
 static uint8_t g_Keys[256] = {};
-static uint8_t g_BmPixels[BmWidth * BmHeight];
+static uint8_t g_BmPixels[BmHeight][BmWidth];
 static BITMAPINFO *g_BmInfo = NULL;
 
-/*Misc*/
-__attribute__((nonnull))
-static void CopyCharsWithNull(char *Dest, const char *Source, size_t Length) {
-    memcpy(Dest, Source, Length);
-    Dest[Length] = '\0';
-} 
+/*Globals (Shared between all)*/
+static FC_VEC(error, 32) g_Errors;
 
-static inline int ReverseDir(int Dir) {
-    return (Dir + 2) % 4;
-}
+/*Globals (World)*/
+typedef struct world {
+    int Width;
+    int Height;
+    int MapI;
+    map Maps[2];
+    object Player;
+    const char *MapPaths[MAX_WORLD_HEIGHT][MAX_WORLD_WIDTH];
+} world;
 
 /*Math Functions*/
 static int Min(int A, int B) {
     return A < B ? A : B;
+}
+
+static inline int ReverseDir(int Dir) {
+    return (Dir + 2) % 4;
 }
 
 static int Max(int A, int B) {
@@ -223,15 +270,16 @@ static point GetFacingPoint(point Pos, int Dir) {
 }
 
 /*Quad Functions*/
-static void SetToTiles(uint8_t TileMap[32][32], int TileX, int TileY, const uint8_t Set[4]) {
+static void SetToTiles(uint8_t TileMap[32][32], int TileX, int TileY, 
+                       const uint8_t Set[static 4]) {
     TileMap[TileY][TileX] = Set[0];
     TileMap[TileY][TileX + 1] = Set[1];
     TileMap[TileY + 1][TileX] = Set[2];
     TileMap[TileY + 1][TileX + 1] = Set[3];
 }
 
-static int GetQuadMapDir(quad_map QuadMaps[2], int Map) {
-    point DirPoint = SubPoints(QuadMaps[!Map].Loaded, QuadMaps[Map].Loaded);
+static int GetMapDir(const map Maps[static 2], int Map) {
+    point DirPoint = SubPoints(Maps[!Map].Loaded, Maps[Map].Loaded);
     for(size_t I = 0; I < _countof(g_DirPoints); I++) {
         if(ComparePoints(DirPoint, g_DirPoints[I])) {
             return I;
@@ -240,12 +288,12 @@ static int GetQuadMapDir(quad_map QuadMaps[2], int Map) {
     return -1; 
 } 
 
-static quad_info GetQuad(quad_map QuadMaps[2], quad_info QuadInfo) {
-    int OldWidth = QuadMaps[QuadInfo.Map].Width;
-    int OldHeight = QuadMaps[QuadInfo.Map].Height;
+static quad_info GetQuad(const map Maps[static 2], quad_info QuadInfo) {
+    int OldWidth = Maps[QuadInfo.Map].Width;
+    int OldHeight = Maps[QuadInfo.Map].Height;
 
-    int NewWidth = QuadMaps[!QuadInfo.Map].Width;
-    int NewHeight = QuadMaps[!QuadInfo.Map].Height;
+    int NewWidth = Maps[!QuadInfo.Map].Width;
+    int NewHeight = Maps[!QuadInfo.Map].Height;
 
     switch(QuadInfo.Dir) {
     case DirUp:
@@ -263,14 +311,14 @@ static quad_info GetQuad(quad_map QuadMaps[2], quad_info QuadInfo) {
         }
         break;
     case DirDown:
-        if(QuadInfo.Point.Y >= QuadMaps[QuadInfo.Map].Height) {
+        if(QuadInfo.Point.Y >= Maps[QuadInfo.Map].Height) {
             QuadInfo.Point.X += (NewWidth - OldWidth) / 2;
             QuadInfo.Point.Y -= OldHeight; 
             QuadInfo.Map ^= 1;
         }
         break;
     case DirRight:
-        if(QuadInfo.Point.X >= QuadMaps[QuadInfo.Map].Width) {
+        if(QuadInfo.Point.X >= Maps[QuadInfo.Map].Width) {
             QuadInfo.Point.X -= OldWidth; 
             QuadInfo.Point.Y += (NewHeight - OldHeight) / 2;
             QuadInfo.Map ^= 1;
@@ -278,60 +326,84 @@ static quad_info GetQuad(quad_map QuadMaps[2], quad_info QuadInfo) {
         break;
     }
 
-    if(QuadInfo.Point.X >= 0 && QuadInfo.Point.X < QuadMaps[QuadInfo.Map].Width && 
-       QuadInfo.Point.Y >= 0 && QuadInfo.Point.Y < QuadMaps[QuadInfo.Map].Height) {
-        QuadInfo.Quad = QuadMaps[QuadInfo.Map].Quads[QuadInfo.Point.Y][QuadInfo.Point.X];
+    if(QuadInfo.Point.X >= 0 && QuadInfo.Point.X < Maps[QuadInfo.Map].Width && 
+       QuadInfo.Point.Y >= 0 && QuadInfo.Point.Y < Maps[QuadInfo.Map].Height) {
+        QuadInfo.Quad = Maps[QuadInfo.Map].Quads[QuadInfo.Point.Y][QuadInfo.Point.X];
     } 
 
     return QuadInfo;
 }
 
-/*Data loaders*/
-static void LogError(const char *Error) {
-    MessageBox(NULL, Error, "Error", MB_ICONERROR);
+/*Error*/
+NONNULL_PARAMS
+static void LogError(const char *Func, const char *Error) {
+    error *CurErr = &g_Errors.Data[g_Errors.Count];
+    if(g_Errors.Count < _countof(g_Errors.Data)) {
+        g_Errors.Count++;
+    } else if(g_Errors.Count == _countof(g_Errors.Data)) { 
+        Func = __func__; 
+        Error = "Out of memory"; 
+        CurErr--;
+    }
+    CurErr->Func = Func;
+    CurErr->Error = Error;
 }
 
+static void DisplayAllErrors(HWND Window) {
+    if(g_Errors.Count != 0) {
+        char Buf[65536];
+        FOR_VEC(Error, g_Errors) {
+            strcat_s(Buf, _countof(Buf), Error->Func);
+            strcat_s(Buf, _countof(Buf), ": ");
+            strcat_s(Buf, _countof(Buf), Error->Error);
+            strcat_s(Buf, _countof(Buf), "\n");
+        }
+        MessageBox(Window, Buf, "Error", MB_OK);
+        g_Errors.Count = 0;
+    }
+}
+
+/*String*/
+NONNULL_PARAMS
+static void CopyCharsWithNull(char *Dest, const char *Source, size_t Length) {
+    memcpy(Dest, Source, Length);
+    Dest[Length] = '\0';
+}
+
+/*Data loaders*/
 static int64_t GetFullFileSize(HANDLE FileHandle) {
     LARGE_INTEGER FileSize;
-    if(!GetFileSizeEx(FileHandle, &FileSize)) {
-        FileSize.QuadPart = -1;
-        LogError("GetFullFileSize: Could not obtain file size");
-    }
-    return FileSize.QuadPart;
+    int Success = GetFileSizeEx(FileHandle, &FileSize);
+    TRY_HERE(Success, "Could not obtain file size");
+    return Success ? FileSize.QuadPart: -1;
 }
 
-static int ReadAll(const char *Path, void *Bytes, int BytesToRead) {
+NONNULL_PARAMS __attribute__((warn_unused_result))
+static int ReadAll(const char *Path, void *Bytes, int MaxBytesToRead) {
+    int Success = 0;
     DWORD BytesRead = 0;
     HANDLE FileHandle = CreateFile(Path, GENERIC_READ, FILE_SHARE_READ, 
                                    NULL, OPEN_EXISTING, 0, NULL);
-    if(FileHandle == INVALID_HANDLE_VALUE) { 
-        LogError("ReadAll: File could not be found"); 
-        BytesRead = -1;
-        goto out;
-    } 
-
+    TRY(FileHandle != INVALID_HANDLE_VALUE, "File could not be found"); 
     int64_t FileSize = GetFullFileSize(FileHandle);
-    if(FileSize >= 0 && FileSize > BytesToRead) {
-        LogError("ReadAll: File is too big for buffer");
-        BytesRead = -1;
-        goto out;
-    } 
+    TRY(FileSize >= 0, "File size could not be obtained");
+    TRY(FileSize <= MaxBytesToRead, "File is too big for buffer");
+        
+    ReadFile(FileHandle, Bytes, FileSize, &BytesRead, NULL); 
+    TRY(BytesRead == FileSize, "Could not read all of file");
 
-    ReadFile(FileHandle, Bytes, BytesToRead, &BytesRead, NULL); 
-    if(BytesRead < FileSize) {
-        LogError("ReadAll: Could not read all of file");
-        BytesRead = -1;
-        goto out;
-
-    }
-
+    Success = 1;
 out:
     if(FileHandle != INVALID_HANDLE_VALUE) {
         CloseHandle(FileHandle);
     }
+    if(!Success) {
+       BytesRead = -1; 
+    }
     return BytesRead;
 }
 
+NONNULL_PARAMS __attribute__((warn_unused_result))
 static int ReadTileData(const char *Path, uint8_t *TileData, int MaxTileCount) {
     const int SizeOfCompressedTile = 16;
     int SizeOfCompressedTileData = MaxTileCount * SizeOfCompressedTile;
@@ -353,87 +425,277 @@ static int ReadTileData(const char *Path, uint8_t *TileData, int MaxTileCount) {
     return TilesRead;
 }
 
-static int ReadQuadMap(const char *Path, quad_map *QuadMap) {
+NONNULL_PARAMS __attribute__((warn_unused_result))
+static int ReadMap(const char *Path, map *Map) {
+    #define NEXT_RUN ({\
+        TRY(RunIndex < BytesRead, "File is truncated");\
+        RunData[RunIndex++];\
+    })
+
+    #define MOVE_RUN(Count) ({\
+        TRY(RunIndex + Count <= BytesRead, "File is truncated");\
+        void *Ret = &RunData[RunIndex];\
+        RunIndex += (Count);\
+        Ret;\
+    })
+
+    #define NEXT_STR(Str) do {\
+        size_t Length = NEXT_RUN;\
+        Str.Count = Length + 1;\
+        CopyCharsWithNull(Str.Data, MOVE_RUN(Length), Length);\
+    } while(0)
+
     uint8_t RunData[65536];
     int BytesRead = ReadAll(Path, RunData, sizeof(RunData));
+    int Success = 0;
+    int RunIndex = 0;
 
-    int Success = 1;
-    IF_ERROR(BytesRead < 0, "ReadQuadMap: Could not read buffer");
-
-    int RunIndex = 2;
     /*ReadQuadSize*/
-    IF_ERROR(RunIndex >= BytesRead, "ReadQuadMap: Could not find size");
-
-    QuadMap->Width = RunData[0] + 1;
-    QuadMap->Height = RunData[1] + 1;
-
-    int Size = QuadMap->Width * QuadMap->Height;
+    Map->Width = NEXT_RUN + 1;
+    Map->Height = NEXT_RUN + 1;
+    int Size = Map->Width * Map->Height;
 
     /*ReadQuads*/
     int QuadIndex = 0;
-
-    while(Success && QuadIndex < Size && RunIndex < BytesRead) {
-        int QuadRaw = RunData[RunIndex++];
+    while(QuadIndex < Size) {
+        int QuadRaw = NEXT_RUN;
         int Quad = QuadRaw & 127;
         int Repeat = 0;
 
         if(Quad == QuadRaw) {
             Repeat = 1;
         } else { 
-            IF_ERROR(RunIndex >= BytesRead, "ReadQuadMap: RLE pair missing repeat count");
-            Repeat = RunData[RunIndex++] + 1;
+            Repeat = NEXT_RUN + 1;
         }
 
-        IF_ERROR(QuadIndex + Repeat > Size, "ReadQuadMap: Quads are truncated");
+        TRY(QuadIndex + Repeat <= Size, "Quads are truncated");
 
         for(int I = QuadIndex; I < QuadIndex + Repeat; I++) {
-            QuadMap->Quads[I / QuadMap->Width][I % QuadMap->Width] = Quad; 
+            Map->Quads[I / Map->Width][I % Map->Width] = Quad; 
         }
 
         QuadIndex += Repeat;
     }
-
-    IF_ERROR(QuadIndex < Size, "ReadQuadMap: Quads are incomplete");
+    TRY(QuadIndex >= Size, "Quads are incomplete");
 
     /*DefaultQuad*/
-    IF_ERROR(RunIndex >= BytesRead, "ReadQuadMap: Could not find default quad");
-    IF_ERROR(QuadMap->DefaultQuad >= 128, "ReadQuadMap: Out of bounds default quad");
-    QuadMap->DefaultQuad = RunData[RunIndex++];
+    Map->DefaultQuad = NEXT_RUN;
+    TRY(Map->DefaultQuad < 128, "Out of bounds default quad");
 
     /*ReadText*/
-    IF_ERROR(RunIndex >= BytesRead, "ReadQuadMap: Text could not be found");
+    Map->Texts.Count = NEXT_RUN;
+    FOR_VEC(Text, Map->Texts) {
+        Text->Pos.X = NEXT_RUN;
+        Text->Pos.Y = NEXT_RUN;
+        NEXT_STR(Text->Str);
+    }
 
-    QuadMap->Count = RunData[RunIndex++];
-    IF_ERROR(QuadMap->Count > _countof(QuadMap->Texts), "ReadQuadMap: Too many texts");
+    /*ReadObjects*/
+    Map->Objects.Count = NEXT_RUN;
+    FOR_VEC(Object, Map->Objects) {
+        Object->Pos.X = NEXT_RUN * 16;
+        Object->Pos.Y = NEXT_RUN * 16;
+        Object->Dir = NEXT_RUN;  
+        Object->Speed = NEXT_RUN;
+        Object->Tile = NEXT_RUN;
+        NEXT_STR(Object->Str);
+    }
 
-    for(int TextIndex = 0; TextIndex < QuadMap->Count && Success; ) {
-        IF_ERROR(RunIndex > BytesRead - 3, "ReadQuadMap: Text truncated");
-        int X = RunData[RunIndex++]; 
-        int Y = RunData[RunIndex++];
-        size_t Length = RunData[RunIndex++];
-        IF_ERROR(Length >= _countof(QuadMap->Texts[0].Data), "ReadQuadMap: Text is too long");
-
-        text *Text = &QuadMap->Texts[TextIndex];
-        Text->Pos.X = X;
-        Text->Pos.Y = Y;
-        Text->Length = Length;
-        CopyCharsWithNull(Text->Data, (char *) &RunData[RunIndex], Length);
-
-        RunIndex += Length;
-        TextIndex++;
-    } 
-
-    /*ReadEntities*/
-    IF_ERROR(RunIndex < BytesRead, "ReadQuadMap: Extraneous data present");
+    TRY(RunIndex >= BytesRead, "Extraneous data present");
     
-
     /*Out*/
+    Success = 1;
 out:
     if(!Success) {
-        memset(QuadMap, 0, sizeof(*QuadMap));
-    } 
-
+        memset(Map, 0, sizeof(*Map));
+    }
     return Success;
+#undef NEXT_STR
+#undef MOVE_RUN
+#undef NEXT_RUN
+}
+
+/*Object Functions*/
+static void MoveEntity(object *Object) {
+    if(Object->State == StateMoving) {
+        point DeltaPoint = g_DirPoints[Object->Dir];
+        DeltaPoint.X *= Object->Speed;
+        DeltaPoint.Y *= Object->Speed;
+        Object->Pos = AddPoints(Object->Pos, DeltaPoint);
+    }
+    Object->Tick--;
+}
+
+static void RandomMove(const map *Map, object *Object, 
+                       const object *Player, const uint8_t QuadProps[64]) {
+    int Seed = rand();
+    if(Seed % 64 == 0) {
+        Object->Dir = Seed / 64 % 4;
+
+        point NewPoint = GetFacingPoint(Object->Pos, Object->Dir);
+
+        /*FetchQuadPropSingleMap*/
+        int Quad = -1;
+        int Prop = QuadPropSolid;
+        int InHorzBounds = NewPoint.X >= 0 && NewPoint.X < Map->Width;
+        int InVertBounds = NewPoint.Y >= 0 && NewPoint.Y < Map->Height;
+        if(InHorzBounds && InVertBounds) {
+            Quad = Map->Quads[NewPoint.Y][NewPoint.X];
+            Prop = QuadProps[Quad];
+        }
+        
+        /*IfWillColideWithPlayer*/
+        point PlayerCurPoint = ConvertToQuadPoint(Player->Pos);
+
+        if(ComparePoints(PlayerCurPoint, NewPoint)) {
+            Prop = QuadPropSolid;
+        } else if(Player->State != StateStop) {
+            point NextPoint = NextPoints[Player->Dir];
+            point PlayerNextPoint = AddPoints(PlayerCurPoint, NextPoint);
+            if(ComparePoints(PlayerNextPoint, NewPoint)) {
+                Prop = QuadPropSolid;
+            }
+        }
+
+        /*StartMovingEntity*/
+        if(!(Prop & QuadPropSolid)) {
+            Object->Tick = 16;
+            Object->State = StateMoving;
+        }
+    }
+}
+
+static void UpdateAnimation(object *Object, sprite *SpriteQuad, point QuadPt) {
+    uint8_t QuadX = QuadPt.X;
+    uint8_t QuadY = QuadPt.Y;
+    if(Object->Tick % 8 < 4) {
+        /*SetStillAnimation*/
+        switch(Object->Dir) {
+        case DirUp:
+            SpriteQuad[0] = (sprite) {0, 0, 0, 0};
+            SpriteQuad[1] = (sprite) {8, 0, 0, SprHorzFlag};
+            SpriteQuad[2] = (sprite) {0, 8, 1, 0};
+            SpriteQuad[3] = (sprite) {8, 8, 1, SprHorzFlag};
+            break;
+        case DirLeft:
+            SpriteQuad[0] = (sprite) {0, 0, 4, 0};
+            SpriteQuad[1] = (sprite) {8, 0, 5, 0};
+            SpriteQuad[2] = (sprite) {0, 8, 6, 0};
+            SpriteQuad[3] = (sprite) {8, 8, 7, 0};
+            break;
+        case DirDown:
+            SpriteQuad[0] = (sprite) {0, 0, 10, 0};
+            SpriteQuad[1] = (sprite) {8, 0, 10, SprHorzFlag};
+            SpriteQuad[2] = (sprite) {0, 8, 11, 0};
+            SpriteQuad[3] = (sprite) {8, 8, 11, SprHorzFlag};
+            break;
+        case DirRight:
+            SpriteQuad[0] = (sprite) {0, 0, 5, SprHorzFlag};
+            SpriteQuad[1] = (sprite) {8, 0, 4, SprHorzFlag};
+            SpriteQuad[2] = (sprite) {0, 8, 7, SprHorzFlag};
+            SpriteQuad[3] = (sprite) {8, 8, 6, SprHorzFlag};
+            break;
+        }
+    } else {
+        /*ChangeFootAnimation*/
+        switch(Object->Dir) {
+        case DirUp:
+            SpriteQuad[0] = (sprite) {0, 1, 0, 0};
+            SpriteQuad[1] = (sprite) {8, 1, 0, SprHorzFlag};
+            if(Object->IsRight) {
+                SpriteQuad[2] = (sprite) {0, 8, 2, 0};
+                SpriteQuad[3] = (sprite) {8, 8, 3, 0};
+            } else {
+                SpriteQuad[2] = (sprite) {0, 8, 3, SprHorzFlag};
+                SpriteQuad[3] = (sprite) {8, 8, 2, SprHorzFlag};
+            }
+            break;
+        case DirLeft:
+            SpriteQuad[0] = (sprite) {0, 1, 4, 0};
+            SpriteQuad[1] = (sprite) {8, 1, 5, 0};
+            SpriteQuad[2] = (sprite) {0, 8, 8, 0};
+            SpriteQuad[3] = (sprite) {8, 8, 9, 0};
+            break;
+        case DirDown:
+            SpriteQuad[0] = (sprite) {0, 1, 10, 0};
+            SpriteQuad[1] = (sprite) {8, 1, 10, SprHorzFlag};
+            if(Object->IsRight) {
+                SpriteQuad[2] = (sprite) {0, 8, 13, SprHorzFlag};
+                SpriteQuad[3] = (sprite) {8, 8, 12, SprHorzFlag};
+            } else {
+                SpriteQuad[2] = (sprite) {0, 8, 12, 0};
+                SpriteQuad[3] = (sprite) {8, 8, 13, 0};
+            }
+            break;
+        case DirRight:
+            SpriteQuad[0] = (sprite) {0, 1, 5, SprHorzFlag};
+            SpriteQuad[1] = (sprite) {8, 1, 4, SprHorzFlag};
+            SpriteQuad[2] = (sprite) {0, 8, 9, SprHorzFlag};
+            SpriteQuad[3] = (sprite) {8, 8, 8, SprHorzFlag};
+            break;
+        }
+        if(Object->Tick % 8 == 4) {
+            Object->IsRight ^= 1;
+        }
+    }
+
+    /*SetSpriteQuad*/
+    for(int SpriteI = 0; SpriteI < 4; SpriteI++) {
+        SpriteQuad[SpriteI].X += QuadX;
+        SpriteQuad[SpriteI].Y += QuadY;
+        SpriteQuad[SpriteI].Tile += Object->Tile;
+    }
+}
+
+static int ObjectInUpdateBounds(point QuadPt) {
+    return QuadPt.X > -16 && QuadPt.X < 176 && QuadPt.Y > -16 && QuadPt.Y < 160;
+}
+
+/*World Functions*/
+NONNULL_PARAMS __attribute__((warn_unused_result))
+static const char *LoadNextMap(world *World, int DeltaX, int DeltaY) {
+    const char *Path = NULL;
+    point AddTo = {DeltaX, DeltaY};
+    point CurMapPt = World->Maps[World->MapI].Loaded;
+    point NewMapPt = AddPoints(CurMapPt, AddTo);
+    if(!ComparePoints(World->Maps[!World->MapI].Loaded, NewMapPt)) {
+        if(NewMapPt.X >= 0 && NewMapPt.X < World->Width &&
+           NewMapPt.Y >= 0 && NewMapPt.Y < World->Height) {
+            Path = World->MapPaths[NewMapPt.Y][NewMapPt.X];
+            if(Path) {
+                TRY(ReadMap(Path, &World->Maps[!World->MapI]), "Could not load map"); 
+                World->Maps[!World->MapI].Loaded = NewMapPt;
+            }
+        }
+    }
+    return Path;
+out:
+    return NULL;
+}
+
+NONNULL_PARAMS
+static void PlaceMap(world *World, 
+                     uint8_t TileMap[32][32], point TileMin, 
+                     const uint8_t QuadData[128][4], rect QuadRect) {
+    int TileY = TileMin.Y;
+    for(int QuadY = QuadRect.Top; QuadY < QuadRect.Bottom; QuadY++) {
+        int TileX = TileMin.X;
+        for(int QuadX = QuadRect.Left; QuadX < QuadRect.Right; QuadX++) {
+            quad_info QuadInfo = {
+                .Point = (point) {QuadX, QuadY},
+                .Map = World->MapI,
+                .Dir = GetMapDir(World->Maps, QuadInfo.Map),
+                .Quad = -1
+            };
+            int Quad = GetQuad(World->Maps, QuadInfo).Quad;
+            if(Quad < 0) {
+                Quad = World->Maps[QuadInfo.Map].DefaultQuad;
+            }
+            SetToTiles(TileMap, TileX, TileY, QuadData[Quad]); 
+            TileX = (TileX + 2) % 32;
+        }
+        TileY = (TileY + 2) % 32;
+    } 
 }
 
 /*Win32 Functions*/
@@ -479,9 +741,11 @@ static LRESULT CALLBACK WndProc(HWND Window, UINT Message, WPARAM WParam, LPARAM
             StretchDIBits(DeviceContext, RenderX, RenderY, RenderWidth, RenderHeight,
                           0, 0, BmWidth, BmHeight, g_BmPixels, g_BmInfo, DIB_RGB_COLORS, SRCCOPY);
             PatBlt(DeviceContext, 0, 0, RenderX, ClientRect.Height, BLACKNESS);
-            PatBlt(DeviceContext, RenderX + RenderWidth, 0, RenderX, ClientRect.Height, BLACKNESS);
+            int RenderRight = RenderX + RenderWidth;
+            PatBlt(DeviceContext, RenderRight, 0, RenderX, ClientRect.Height, BLACKNESS);
             PatBlt(DeviceContext, RenderX, 0, RenderWidth, RenderY, BLACKNESS);
-            PatBlt(DeviceContext, RenderX, RenderY + RenderHeight, RenderWidth, RenderY + 1, BLACKNESS);
+            int RenderBottom = RenderY + RenderHeight;
+            PatBlt(DeviceContext, RenderX, RenderBottom, RenderWidth, RenderY + 1, BLACKNESS);
             EndPaint(Window, &Paint);
         }
         return 0;
@@ -491,6 +755,10 @@ static LRESULT CALLBACK WndProc(HWND Window, UINT Message, WPARAM WParam, LPARAM
 
 int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLine, int CmdShow) {
     srand(time(NULL));
+
+    /*Predeclared for error cleanup*/
+    HWND Window = NULL;
+    int IsGranular = 0;
 
     /*InitBitmap*/
     g_BmInfo = alloca(sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD) * 4);
@@ -516,27 +784,33 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         .hCursor = LoadCursor(NULL, IDC_ARROW),
         .lpszClassName = "PokeWindowClass"
     };
-    if(!RegisterClass(&WindowClass)) {
-        return 1;
-    }
+    TRY(RegisterClass(&WindowClass), "Could not register class");
 
     RECT WinWindowRect = {0, 0, BmWidth, BmHeight};
     AdjustWindowRect(&WinWindowRect, WS_OVERLAPPEDWINDOW, 0);
 
     dim_rect WindowRect = WinToDimRect(WinWindowRect);
 
-    HWND Window = CreateWindow(WindowClass.lpszClassName, "PokeGame", WS_OVERLAPPEDWINDOW,
-                               CW_USEDEFAULT, CW_USEDEFAULT, WindowRect.Width, WindowRect.Height, 
-                               NULL, NULL, Instance, NULL);
-    if(!Window) {
-        return 1;
-    }
+    Window = CreateWindow(
+        WindowClass.lpszClassName, 
+        "PokeGame", 
+        WS_OVERLAPPEDWINDOW,
+        CW_USEDEFAULT, 
+        CW_USEDEFAULT, 
+        WindowRect.Width, 
+        WindowRect.Height, 
+        NULL, 
+        NULL, 
+        Instance, 
+        NULL
+    );
+    TRY(Window, "Could not create window");
 
-    SetCurrentDirectory("../Shared");
+    TRY(SetCurrentDirectory("../Shared"), "Could not find shared directory");
 
     /*LoadQuadData*/
     uint8_t QuadData[128][4] = {};
-    int SetsRead = ReadAll("QuadData", QuadData, sizeof(QuadData)); 
+    int SetsRead = ReadAll("QuadData", QuadData, sizeof(QuadData)) / 4; 
     for(int Set = 0; Set < SetsRead; Set++) {
         for(int I = 0; I < 4; I++) {
             QuadData[Set][I] = Clamp(QuadData[Set][I], 0, 95);
@@ -545,7 +819,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     
     /*ReadQuadProps*/
     uint8_t QuadProps[128] = {};
-    ReadAll("QuadProps", QuadProps, sizeof(QuadProps));
+    TRY_HERE(ReadAll("QuadProps", QuadProps, sizeof(QuadProps)) == 128,  "Could not load quad props");
 
     /*LoadTileData*/
     uint8_t TileData[256 * TileSize];
@@ -553,63 +827,67 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     uint8_t FlowerData[3 * TileSize];
     uint8_t WaterData[7 * TileSize];
 
-    ReadTileData("TileData", TileData, 110);
-    ReadTileData("Numbers", TileData + 110 * TileSize, 146);
-    ReadTileData("SpriteData", SpriteData, 256);
-    ReadTileData("FlowerData", FlowerData, 3);
-    ReadTileData("WaterData", WaterData, 7);
-    ReadTileData("ShadowData", SpriteData + 255 * TileSize, 1);
+#define LOAD_TILE_DATA(Name, Data, Offset, Index) \
+    TRY_HERE(ReadTileData(Name, Data + (Offset) * TileSize, Index), "Could not load tile data: " Name) 
 
-    /*InitQuadMaps*/
-    static quad_map QuadMaps[2] = {
-        {
-            .Loaded = {0, 2} 
+    LOAD_TILE_DATA("TileData", TileData, 0, 110);
+    LOAD_TILE_DATA("Numbers", TileData, 110, 146);
+    LOAD_TILE_DATA("SpriteData", SpriteData, 0, 256);
+    LOAD_TILE_DATA("FlowerData", FlowerData, 0, 3);
+    LOAD_TILE_DATA("WaterData", WaterData, 0, 7);
+    LOAD_TILE_DATA("ShadowData", SpriteData, 255, 1);
+
+    /*InitMaps*/
+    world World = {
+        .Width = 1,
+        .Height = 4,
+        .MapI = 0,
+        .Player = {
+            .Pos = {80, 96},
+            .Dir = DirDown,
+            .Speed = 2,
+            .Tile = 0,
         },
-        {
-            .Loaded = {-1, 0}
+        .Maps = {
+            [0] = {
+                .Loaded = {0, 2}
+            }
+        },
+        .MapPaths = {
+            {"VirdianCity"},
+            {"Route1"},
+            {"PalleteTown"},
+            {"Route21"}
         }
     };
 
-    #define WorldWidth 1
-    #define WorldHeight 4 
-
-    const char *QuadMapPaths[WorldHeight][WorldWidth] = {
-        {"VirdianCity"},
-        {"Route1"},
-        {"PalleteTown"},
-        {"Route21"}
-    };
-
-    ReadQuadMap("PalleteTown", &QuadMaps[0]);
+    TRY_HERE(ReadMap("PalleteTown", &World.Maps[0]), "Could not load map");
 
     /*InitObjects*/
+    /*
     object Objs[] = {
         {
             .Pos = {80, 96},
             .Dir = DirDown,
             .Speed = 2,
             .Tile = 0,
-            .Map = 0
+            .Map = 2
         }, 
         
         {
-            /*
             .Pos = {176, 224},
             .Dir = DirDown,
             .Speed = 1,
             .Tile = 14,
             .Map = 0
-            */
         },
 
         {
-            /*
             .Pos = {48, 128},
             .Dir = DirDown,
             .Speed = 1,
             .Tile = 28,
             .Map = 0,
-            */
         },
 
         {
@@ -622,6 +900,8 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     };
     
     int ObjCount = 4;
+    */
+    DisplayAllErrors(Window);
 
     /*GameBoyGraphics*/
     sprite Sprites[40] = {};
@@ -630,37 +910,15 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     uint8_t ScrollX = 0;
     uint8_t ScrollY = 0;
 
-    /*TranslateFullQuadMapToTiles*/
-    void PlaceQuadMap(rect QuadRect, point TileMin) {
-        int TileY = TileMin.Y;
-        for(int QuadY = QuadRect.Top; QuadY < QuadRect.Bottom; QuadY++) {
-            int TileX = TileMin.X;
-            for(int QuadX = QuadRect.Left; QuadX < QuadRect.Right; QuadX++) {
-                quad_info QuadInfo = {
-                    .Point = (point) {QuadX, QuadY},
-                    .Map = Objs[0].Map,
-                    .Dir = GetQuadMapDir(QuadMaps, QuadInfo.Map),
-                    .Quad = -1
-                };
-                int Quad = GetQuad(QuadMaps, QuadInfo).Quad;
-                if(Quad < 0) {
-                    Quad = QuadMaps[QuadInfo.Map].DefaultQuad;
-                }
-                SetToTiles(TileMap, TileX, TileY, QuadData[Quad]); 
-                TileX = (TileX + 2) % 32;
-            }
-            TileY = (TileY + 2) % 32;
-        } 
-    }
-
+    /*TranslateFullMapToTiles*/
     rect QuadRect = {
-        .Left = Objs[0].Pos.X / 16 - 4,
-        .Top = Objs[0].Pos.Y / 16 - 4,
+        .Left = World.Player.Pos.X / 16 - 4,
+        .Top = World.Player.Pos.Y / 16 - 4,
         .Right = QuadRect.Left + 10,
         .Bottom = QuadRect.Top + 9
     };
     point TileMin = {};
-    PlaceQuadMap(QuadRect, TileMin);
+    PlaceMap(&World, TileMap, TileMin, QuadData, QuadRect);
 
     /*WindowMap*/
     uint8_t WindowMap[32][32];
@@ -687,8 +945,6 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     int64_t FrameDelta = PerfFreq / 30;
 
     /*LoadWinmm*/
-    int IsGranular = 0;
-
     typedef MMRESULT WINAPI(winmm_func)(UINT);
 
     winmm_func *TimeEndPeriod = NULL;
@@ -748,12 +1004,6 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         }
 
         /*InitSharedUpdate*/
-        point NextPoints[] = {
-            [DirUp] = {0, 1},
-            [DirLeft] = {1, 0},
-            [DirDown] = {0, 1},
-            [DirRight] = {1, 0}
-        };
         sprite *PlayerQuad = Sprites;
 
         /*UpdatePlayer*/
@@ -844,41 +1094,41 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
             sprite *ShadowQuad = Sprites + 36;
 
             /*PlayerUpdate*/
-            if(Objs[0].Tick == 0) {
+            if(World.Player.Tick == 0) {
                 memset(ShadowQuad, 0, sizeof(*ShadowQuad) * 4);
                 int AttemptLeap = 0;
 
                 /*PlayerKeyboard*/
                 int HasMoveKey = 1;
                 if(g_Keys['W']) {
-                    Objs[0].Dir = DirUp;
+                    World.Player.Dir = DirUp;
                 } else if(g_Keys['A']) {
-                    Objs[0].Dir = DirLeft;
+                    World.Player.Dir = DirLeft;
                 } else if(g_Keys['S']) {
-                    Objs[0].Dir = DirDown;
+                    World.Player.Dir = DirDown;
                     AttemptLeap = 1;
                 } else if(g_Keys['D']) {
-                    Objs[0].Dir = DirRight;
+                    World.Player.Dir = DirRight;
                 } else {
                     HasMoveKey = 0;
                 }
 
-                point NewPoint = GetFacingPoint(Objs[0].Pos, Objs[0].Dir);
+                point NewPoint = GetFacingPoint(World.Player.Pos, World.Player.Dir);
 
                 /*FetchQuadProp*/
                 quad_info QuadInfo = {
                     .Point = NewPoint,
-                    .Map = Objs[0].Map,
-                    .Dir = GetQuadMapDir(QuadMaps, QuadInfo.Map),
+                    .Map = World.MapI,
+                    .Dir = GetMapDir(World.Maps, QuadInfo.Map),
                     .Quad = -1,
                 };
-                QuadInfo = GetQuad(QuadMaps, QuadInfo);
+                QuadInfo = GetQuad(World.Maps, QuadInfo);
 
                 NewPoint = QuadInfo.Point;
                 int Quad = QuadInfo.Quad;
-                int NewQuadMap = QuadInfo.Map;
+                int NewMap = QuadInfo.Map;
 
-                point StartPos = AddPoints(NewPoint, g_DirPoints[ReverseDir(Objs[0].Dir)]); 
+                point StartPos = AddPoints(NewPoint, g_DirPoints[ReverseDir(World.Player.Dir)]); 
                 StartPos.X *= 16;
                 StartPos.Y *= 16;
 
@@ -891,25 +1141,25 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                     TestPoint.Y++;
                 }
 
-                int ObjI = 1;
-                for(; ObjI < ObjCount; ObjI++) {
-                    if(Objs[ObjI].Map == Objs[0].Map) {
-                        point OtherOldPoint = ConvertToQuadPoint(Objs[ObjI].Pos);
-                        if(Objs[ObjI].Tick > 0) {
-                            point OtherDirPoint = NextPoints[Objs[ObjI].Dir];
-                            point OtherNewPoint = AddPoints(OtherOldPoint, OtherDirPoint);
-                            if(ComparePoints(TestPoint, OtherOldPoint) ||
-                               ComparePoints(TestPoint, OtherNewPoint)) {
-                                Prop = QuadPropSolid;
-                                break;
-                            }
-                        } else if(ComparePoints(TestPoint, OtherOldPoint)) {
+                object *FacingObject = NULL; 
+                FOR_VEC(Object, World.Maps[World.MapI].Objects) {
+                    point OtherOldPoint = ConvertToQuadPoint(Object->Pos);
+                    if(Object->Tick > 0) {
+                        point OtherDirPoint = NextPoints[Object->Dir];
+                        point OtherNewPoint = AddPoints(OtherOldPoint, OtherDirPoint);
+                        if(ComparePoints(TestPoint, OtherOldPoint) ||
+                           ComparePoints(TestPoint, OtherNewPoint)) {
                             Prop = QuadPropSolid;
-                            if(!AttemptLeap) {
-                                Prop |= QuadPropMessage;
-                            }
+                            FacingObject = Object;
                             break;
                         }
+                    } else if(ComparePoints(TestPoint, OtherOldPoint)) {
+                        Prop = QuadPropSolid;
+                        if(!AttemptLeap) {
+                            Prop |= QuadPropMessage;
+                        }
+                        FacingObject = Object;
+                        break;
                     }
                 }
 
@@ -931,6 +1181,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                         memcpy(WindowMap[17], TextBoxFooterRow, sizeof(TextBoxFooterRow));
 
                         /*GetActiveText*/
+                        /*
                         const char *ObjectText[] = {
                             "Technology is\nincredible!\f"
                             "You can now store\nand recall items\nand POKÈMON as\ndata via PC!",
@@ -940,15 +1191,16 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
 
                             "We also carry\nPOKÈ BALLS for\ncatching POKÈMON!"
                         };
+                        */
 
-                        if(ObjI < ObjCount) {
-                            ActiveText = ObjectText[ObjI - 1];
-                            Objs[ObjI].Dir = ReverseDir(Objs[0].Dir);
+                        if(FacingObject) {
+                            ActiveText = FacingObject->Str.Data;
+                            FacingObject->Dir = ReverseDir(World.Player.Dir);
                         } else {
                             ActiveText = "No text found";
-                            for(int I = 0; I < QuadMaps[Objs[0].Map].Count; I++) {
-                                if(ComparePoints(QuadMaps[Objs[0].Map].Texts[I].Pos, NewPoint)) {
-                                    ActiveText = QuadMaps[Objs[0].Map].Texts[I].Data;
+                            FOR_VEC(Text, World.Maps[World.MapI].Texts) {
+                                if(ComparePoints(Text->Pos, NewPoint)) {
+                                    ActiveText = Text->Str.Data;
                                     break;
                                 }
                             }
@@ -959,17 +1211,17 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
 
                         HasMoveKey = 0;
                     } else if(Prop & QuadPropWater) {
-                        if(Objs[0].Tile == AnimPlayer) {
-                            Objs[0].Tile = AnimSeal;
+                        if(World.Player.Tile == AnimPlayer) {
+                            World.Player.Tile = AnimSeal;
                             HasMoveKey = 1;
                         } 
-                    } else if(Objs[0].Tile == AnimSeal && !(Prop & QuadPropSolid)) {
-                        Objs[0].Tile = AnimPlayer;
+                    } else if(World.Player.Tile == AnimSeal && !(Prop & QuadPropSolid)) {
+                        World.Player.Tile = AnimPlayer;
                         HasMoveKey = 1;
                     }
                 } 
 
-                if(Objs[0].Tile != 0) {
+                if(World.Player.Tile != 0) {
                     if(Prop & QuadPropWater) {
                         Prop &= ~QuadPropSolid;
                     } else {
@@ -982,8 +1234,8 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 if(HasMoveKey) {
                     /*MovePlayer*/
                     IsLeaping = 0;
-                    if(Objs[0].Dir == DirDown && Prop & QuadPropEdge) {
-                        Objs[0].State = StateMoving;
+                    if(World.Player.Dir == DirDown && Prop & QuadPropEdge) {
+                        World.Player.State = StateMoving;
                         IsLeaping = 1;
 
                         /*CreateShadowQuad*/
@@ -992,65 +1244,48 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                         ShadowQuad[2] = (sprite) {72, 80, 255, SprVertFlag};
                         ShadowQuad[3] = (sprite) {80, 80, 255, SprHorzFlag | SprVertFlag};
                     } else if(Prop & QuadPropSolid) {
-                        Objs[0].State = StateStop;
+                        World.Player.State = StateStop;
                     } else {
-                        Objs[0].State = StateMoving;
+                        World.Player.State = StateMoving;
                     }
-                    Objs[0].Tick = IsLeaping ? 16 : 8;
+                    World.Player.Tick = IsLeaping ? 16 : 8;
                 } else {
-                    Objs[0].State = StateStop;
+                    World.Player.State = StateStop;
                 }
 
-                if(Objs[0].State == StateMoving) {
-                    Objs[0].Pos = StartPos;
-                    Objs[0].Map = NewQuadMap;
+                if(World.Player.State == StateMoving) {
+                    World.Player.Pos = StartPos;
+                    World.MapI = NewMap;
 
-                    /*UpdateLoadedQuadMaps*/
+                    /*UpdateLoadedMaps*/
                     int AddToX = 0;
                     int AddToY = 0;
                     if(NewPoint.X == 4) {
                         AddToX = -1;
-                    } else if(NewPoint.X == QuadMaps[Objs[0].Map].Width - 4) {
+                    } else if(NewPoint.X == World.Maps[World.MapI].Width - 4) {
                         AddToX = 1;
                     } 
                     if(NewPoint.Y == 4) {
                         AddToY = -1;
-                    } else if(NewPoint.Y == QuadMaps[Objs[0].Map].Height - 4) {
+                    } else if(NewPoint.Y == World.Maps[World.MapI].Height - 4) {
                         AddToY = 1;
-                    }
-
-                    const char *LoadNextQuadMap(int DeltaX, int DeltaY) {
-                        const char *Path = NULL;
-                        point AddTo = {DeltaX, DeltaY};
-                        point CurQuadMapPt = QuadMaps[Objs[0].Map].Loaded;
-                        point NewQuadMapPt = AddPoints(CurQuadMapPt, AddTo);
-                        if(!ComparePoints(QuadMaps[!Objs[0].Map].Loaded, NewQuadMapPt)) {
-                            if(NewQuadMapPt.X >= 0 && NewQuadMapPt.X < WorldWidth &&
-                               NewQuadMapPt.Y >= 0 && NewQuadMapPt.Y < WorldHeight) {
-                                Path = QuadMapPaths[NewQuadMapPt.Y][NewQuadMapPt.X];
-                                if(Path) {
-                                    ReadQuadMap(Path, &QuadMaps[!Objs[0].Map]); 
-                                    QuadMaps[!Objs[0].Map].Loaded = NewQuadMapPt;
-                                }
-                            }
-                        }
-                        return Path;
                     }
 
                     const char *Path = NULL;
                     if(AddToX) {
-                        Path = LoadNextQuadMap(AddToX, 0);
+                        Path = LoadNextMap(&World, AddToX, 0);
                     } 
 
                     if(AddToY && !Path) {
-                        LoadNextQuadMap(0, AddToY);
+                        Path = LoadNextMap(&World, 0, AddToY);
                     }
+                    DisplayAllErrors(Window);
 
                     /*TranslateQuadRectToTiles*/
                     point TileMin = {};
                     rect QuadRect = {};
 
-                    switch(Objs[0].Dir) {
+                    switch(World.Player.Dir) {
                     case DirUp:
                         TileMin.X = (ScrollX / 8) & 31;
                         TileMin.Y = (ScrollY / 8 + 30) & 31;
@@ -1096,194 +1331,87 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                         };
                         break;
                     }
-                    PlaceQuadMap(QuadRect, TileMin);
+                    PlaceMap(&World, TileMap, TileMin, QuadData, QuadRect);
                 }
             }
         }
 
         int SprI = 0;
-        for(int I = 0; I < ObjCount; I++) {
-            sprite *SpriteQuad = &Sprites[SprI];
-            int TmpQuadX = Objs[I].Pos.X - Objs[0].Pos.X + 72;
-            int TmpQuadY = Objs[I].Pos.Y - Objs[0].Pos.Y + 72;
 
-            if(Objs[0].Map != Objs[I].Map) {
-                /*
-                switch(QuadMapDir) {
+        /*UpdatePlayer*/
+        sprite *SpriteQuad = &Sprites[SprI];
+        point PlayerPt = {72, 72};
+        UpdateAnimation(&World.Player, SpriteQuad, PlayerPt);
+        if(!IsPaused && World.Player.Tick > 0) {
+            MoveEntity(&World.Player);
+            if(World.Player.State == StateMoving) {
+                switch(World.Player.Dir) {
                 case DirUp:
-                    TmpQuadY -= QuadMaps[Objs[0].Map].Height * 16;
+                    ScrollY -= World.Player.Speed;
+                    break;
+                case DirLeft:
+                    ScrollX -= World.Player.Speed;
+                    break;
+                case DirRight:
+                    ScrollX += World.Player.Speed;
                     break;
                 case DirDown:
-                    TmpQuadY += QuadMaps[Objs[0].Map].Height * 16;
+                    ScrollY += World.Player.Speed;
                     break;
                 }
-                */
-            }
-
-            if(TmpQuadX > -16 && TmpQuadX < 176 && TmpQuadY > -16 && TmpQuadY < BmWidth) {
-                uint8_t QuadX = TmpQuadX;
-                uint8_t QuadY = TmpQuadY;
-                if(Objs[I].Tick % 8 < 4) {
-                    /*SetStillAnimation*/
-                    switch(Objs[I].Dir) {
-                    case DirUp:
-                        SpriteQuad[0] = (sprite) {0, 0, 0, 0};
-                        SpriteQuad[1] = (sprite) {8, 0, 0, SprHorzFlag};
-                        SpriteQuad[2] = (sprite) {0, 8, 1, 0};
-                        SpriteQuad[3] = (sprite) {8, 8, 1, SprHorzFlag};
-                        break;
-                    case DirLeft:
-                        SpriteQuad[0] = (sprite) {0, 0, 4, 0};
-                        SpriteQuad[1] = (sprite) {8, 0, 5, 0};
-                        SpriteQuad[2] = (sprite) {0, 8, 6, 0};
-                        SpriteQuad[3] = (sprite) {8, 8, 7, 0};
-                        break;
-                    case DirDown:
-                        SpriteQuad[0] = (sprite) {0, 0, 10, 0};
-                        SpriteQuad[1] = (sprite) {8, 0, 10, SprHorzFlag};
-                        SpriteQuad[2] = (sprite) {0, 8, 11, 0};
-                        SpriteQuad[3] = (sprite) {8, 8, 11, SprHorzFlag};
-                        break;
-                    case DirRight:
-                        SpriteQuad[0] = (sprite) {0, 0, 5, SprHorzFlag};
-                        SpriteQuad[1] = (sprite) {8, 0, 4, SprHorzFlag};
-                        SpriteQuad[2] = (sprite) {0, 8, 7, SprHorzFlag};
-                        SpriteQuad[3] = (sprite) {8, 8, 6, SprHorzFlag};
-                        break;
-                    }
-                } else {
-                    /*ChangeFootAnimation*/
-                    switch(Objs[I].Dir) {
-                    case DirUp:
-                        SpriteQuad[0] = (sprite) {0, 1, 0, 0};
-                        SpriteQuad[1] = (sprite) {8, 1, 0, SprHorzFlag};
-                        if(Objs[I].IsRight) {
-                            SpriteQuad[2] = (sprite) {0, 8, 2, 0};
-                            SpriteQuad[3] = (sprite) {8, 8, 3, 0};
-                        } else {
-                            SpriteQuad[2] = (sprite) {0, 8, 3, SprHorzFlag};
-                            SpriteQuad[3] = (sprite) {8, 8, 2, SprHorzFlag};
-                        }
-                        break;
-                    case DirLeft:
-                        SpriteQuad[0] = (sprite) {0, 1, 4, 0};
-                        SpriteQuad[1] = (sprite) {8, 1, 5, 0};
-                        SpriteQuad[2] = (sprite) {0, 8, 8, 0};
-                        SpriteQuad[3] = (sprite) {8, 8, 9, 0};
-                        break;
-                    case DirDown:
-                        SpriteQuad[0] = (sprite) {0, 1, 10, 0};
-                        SpriteQuad[1] = (sprite) {8, 1, 10, SprHorzFlag};
-                        if(Objs[I].IsRight) {
-                            SpriteQuad[2] = (sprite) {0, 8, 13, SprHorzFlag};
-                            SpriteQuad[3] = (sprite) {8, 8, 12, SprHorzFlag};
-                        } else {
-                            SpriteQuad[2] = (sprite) {0, 8, 12, 0};
-                            SpriteQuad[3] = (sprite) {8, 8, 13, 0};
-                        }
-                        break;
-                    case DirRight:
-                        SpriteQuad[0] = (sprite) {0, 1, 5, SprHorzFlag};
-                        SpriteQuad[1] = (sprite) {8, 1, 4, SprHorzFlag};
-                        SpriteQuad[2] = (sprite) {0, 8, 9, SprHorzFlag};
-                        SpriteQuad[3] = (sprite) {8, 8, 8, SprHorzFlag};
-                        break;
-                    }
-                    if(Objs[I].Tick % 8 == 4) {
-                        Objs[I].IsRight ^= 1;
-                    }
-                }
-
-                /*SetSpriteQuad*/
-                for(int SpriteI = 0; SpriteI < 4; SpriteI++) {
-                    SpriteQuad[SpriteI].X += QuadX;
-                    SpriteQuad[SpriteI].Y += QuadY;
-                    SpriteQuad[SpriteI].Tile += Objs[I].Tile;
-                }
-
-                /*TickFrame*/
-                if(!IsPaused) {
-                    if(Objs[I].Tick > 0) {
-                        /*MoveEntity*/
-                        if(Objs[I].State == StateMoving) {
-                            point DeltaPoint = g_DirPoints[Objs[I].Dir];
-                            DeltaPoint.X *= Objs[I].Speed;
-                            DeltaPoint.Y *= Objs[I].Speed;
-                            Objs[I].Pos = AddPoints(Objs[I].Pos, DeltaPoint);
-                            if(I == 0) {
-                                switch(Objs[0].Dir) {
-                                case DirLeft:
-                                    ScrollX -= Objs[I].Speed;
-                                    break;
-                                case DirRight:
-                                    ScrollX += Objs[I].Speed;
-                                    break;
-                                case DirDown:
-                                    ScrollY += Objs[I].Speed;
-                                    break;
-                                case DirUp:
-                                    ScrollY -= Objs[I].Speed;
-                                    break;
-                                }
-                            } 
-                        }
-                        Objs[I].Tick--;
-                    } else if(I != 0) {
-                        /*RandomMove*/
-                        int Seed = rand();
-                        if(Seed % 64 == 0) {
-                            Objs[I].Dir = Seed / 64 % 4;
-
-                            point NewPoint = GetFacingPoint(Objs[I].Pos, Objs[I].Dir);
-
-                            /*FetchQuadPropSingleMap*/
-                            int Quad = -1;
-                            int Prop = QuadPropSolid;
-                            int InHorzBounds = NewPoint.X >= 0 && NewPoint.X < QuadMaps[Objs[I].Map].Width;
-                            int InVertBounds = NewPoint.Y >= 0 && NewPoint.Y < QuadMaps[Objs[I].Map].Height;
-                            if(InHorzBounds && InVertBounds) {
-                                Quad = QuadMaps[Objs[I].Map].Quads[NewPoint.Y][NewPoint.X];
-                                Prop = QuadProps[Quad];
-                            }
-                            
-                            /*IfWillColideWithPlayer*/
-                            point PlayerCurPoint = ConvertToQuadPoint(Objs[0].Pos);
-
-                            if(ComparePoints(PlayerCurPoint, NewPoint)) {
-                                Prop = QuadPropSolid;
-                            } else if(Objs[0].State != StateStop) {
-                                point NextPoint = NextPoints[Objs[0].Dir];
-                                point PlayerNextPoint = AddPoints(PlayerCurPoint, NextPoint);
-                                if(ComparePoints(PlayerNextPoint, NewPoint)) {
-                                    Prop = QuadPropSolid;
-                                }
-                            }
-
-                            /*MoveEntity*/
-                            if(!(Prop & QuadPropSolid)) {
-                                Objs[I].Tick = 16;
-                                Objs[I].State = StateMoving;
-                            }
-                        }
-                    } 
-                }
-                SprI += 4;
             }
         }
+        SprI += 4;
+   
+        /*UpdateObjects*/
+        for(int MapI = 0; MapI < _countof(World.Maps); MapI++) {
+            map *Map = &World.Maps[MapI];
+            FOR_VEC(Object, Map->Objects) {
+                sprite *SpriteQuad = &Sprites[SprI];
+                point QuadPt = {
+                    Object->Pos.X - World.Player.Pos.X + 72,
+                    Object->Pos.Y - World.Player.Pos.Y + 72
+                };
 
-        /*SetUnusedSpritesInvisible*/
-        for(int ClearI = SprI; ClearI < 36; ClearI++) {
-            Sprites[ClearI].Y = 240;
+                if(World.MapI != MapI) {
+                    switch(GetMapDir(World.Maps, World.MapI)) {
+                    case DirUp:
+                        QuadPt.Y -= World.Maps[MapI].Height * 16;
+                        break;
+                    case DirLeft:
+                        QuadPt.X -= World.Maps[MapI].Width * 16;
+                        break;
+                    case DirDown:
+                        QuadPt.Y += World.Maps[World.MapI].Height * 16;
+                        break;
+                    case DirRight:
+                        QuadPt.X += World.Maps[World.MapI].Width * 16;
+                        break;
+                    }
+                }
+
+                if(ObjectInUpdateBounds(QuadPt)) {
+                    UpdateAnimation(Object, SpriteQuad, QuadPt);
+                    /*TickFrame*/
+                    if(!IsPaused) {
+                        if(Object->Tick > 0) {
+                            MoveEntity(Object);
+                        } else /*if(I != 0)*/ {
+                            RandomMove(Map, Object, &World.Player, QuadProps);
+                        } 
+                    }
+                    SprI += 4;
+                }
+            }
         }
 
         /*PlayerUpdateJumpingAnimation*/
         if(IsLeaping) {
             uint8_t PlayerDeltas[] = {0, 4, 6, 8, 9, 10, 11, 12};
-            uint8_t DeltaI = Objs[0].Tick < 8 ? Objs[0].Tick: 15 - Objs[0].Tick;
-            PlayerQuad[0].Y -= PlayerDeltas[DeltaI];
-            PlayerQuad[1].Y -= PlayerDeltas[DeltaI];
-            PlayerQuad[2].Y -= PlayerDeltas[DeltaI];
-            PlayerQuad[3].Y -= PlayerDeltas[DeltaI];
+            uint8_t DeltaI = World.Player.Tick < 8 ? World.Player.Tick: 15 - World.Player.Tick;
+            FOR_RANGE(Tile, PlayerQuad, 0, 4) { 
+                Tile->Y -= PlayerDeltas[DeltaI];
+            }
         }
 
         /*MutTileUpdate*/
@@ -1301,7 +1429,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         }
 
         /*RenderTiles*/
-        uint8_t *BmRow = g_BmPixels;
+        uint8_t (*BmRow)[BmWidth] = g_BmPixels;
 
         int MaxPixelY = WindowY < BmHeight ? WindowY : BmHeight; 
 
@@ -1310,18 +1438,20 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
             int SrcYDsp = ((PixelY + ScrollY) & 7) << 3;
             int TileX = ScrollX >> 3;
             int TileY = (PixelY + ScrollY) / 8 % 32;
-            memcpy(BmRow, TileData + (SrcYDsp | (ScrollX & 7)) + TileMap[TileY][TileX] * TileSize, 8);
+            int StartOff = SrcYDsp | (ScrollX & 7);
+            memcpy(*BmRow, TileData + StartOff + TileMap[TileY][TileX] * TileSize, 8);
 
             for(int Repeat = 1; Repeat < 20; Repeat++) {
                 TileX = (TileX + 1) % 32;
-                uint8_t *Pixel = BmRow + PixelX;
+                uint8_t *Pixel = *BmRow + PixelX;
                 memcpy(Pixel, TileData + SrcYDsp + TileMap[TileY][TileX] * TileSize, 8);
+
                 PixelX += 8;
             }
             TileX = (TileX + 1) % 32;
-            uint8_t *Pixel = BmRow + PixelX;
+            uint8_t *Pixel = *BmRow + PixelX;
             memcpy(Pixel, TileData + SrcYDsp + TileMap[TileY][TileX] * TileSize, BmWidth - PixelX);
-            BmRow += BmWidth;
+            BmRow++;
         }
 
         for(int PixelY = MaxPixelY; PixelY < BmHeight; PixelY++) {
@@ -1331,18 +1461,18 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
             int TileY = PixelY / 8;
 
             for(int Repeat = 0; Repeat < 20; Repeat++) {
-                memcpy(BmRow + PixelX, TileData + SrcYDsp + WindowMap[TileY][TileX] * TileSize, 8);
+                memcpy(*BmRow + PixelX, TileData + SrcYDsp + WindowMap[TileY][TileX] * TileSize, 8);
                 TileX++;
                 PixelX += 8;
             }
-            BmRow += BmWidth;
+            BmRow++;
         }
 
         /*RenderSprites*/
         int MaxX = BmWidth;
         int MaxY = WindowY < BmHeight ? WindowY : BmHeight;
 
-        for(size_t I = _countof(Sprites); I-- > 0; ) {
+        for(size_t I = SprI; I-- > 0; ) {
             int RowsToRender = 8;
             if(Sprites[I].Y < 8) {
                 RowsToRender = Sprites[I].Y;
@@ -1357,9 +1487,8 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 ColsToRender = Max(MaxX + 8 - Sprites[I].X, 0);
             }
 
-            int DestX = Max(Sprites[I].X - 8, 0);
-            int DestY = Max(Sprites[I].Y - 8, 0);
-            uint8_t *Dest = g_BmPixels + DestY * BmWidth + DestX;
+            int DstX = Max(Sprites[I].X - 8, 0);
+            int DstY = Max(Sprites[I].Y - 8, 0);
 
             int SrcX = Max(8 - Sprites[I].X, 0);
             int DispX = 1;
@@ -1380,12 +1509,11 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 uint8_t *Tile = Src;
                 for(int X = 0; X < ColsToRender; X++) {
                     if(*Tile != 2) {
-                        Dest[X] = *Tile;
+                        g_BmPixels[Y + DstY][X + DstX] = *Tile;
                     }
                     Tile += DispX;
                 }
                 Src += DispY;
-                Dest += BmWidth;
             }
         }
 
@@ -1425,10 +1553,13 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         Tick++;
     }
 
+out: 
     /*CleanUp*/
     if(IsGranular) {
         TimeEndPeriod(1);
     }
-    return 0;
+
+    DisplayAllErrors(Window);
+    return g_Errors.Count != 0;
 }
 
