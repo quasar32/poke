@@ -125,7 +125,7 @@ static void WriteTileData(void) {
             }
         }
     }
-    WriteAll("../Shared/TileData2", OutTileData, g_TileCount * 16); 
+    WriteAll("../Shared/Menu", OutTileData, g_TileCount * 16); 
 }
 
 /*Drawer*/
@@ -322,7 +322,7 @@ static HWND CreatePokeWindow(const char *WindowName, int ClientWidth, int Client
             NULL /*Extra*/
         );
         if(!Window) {
-            UnregisterClass(&WindowClass, Instance);
+            UnregisterClass(WindowClass.lpszClassName, Instance);
         }
     }
     return Window;
@@ -330,7 +330,7 @@ static HWND CreatePokeWindow(const char *WindowName, int ClientWidth, int Client
 
 __attribute__((nonnull(1, 3)))
 int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdShow) {
-    g_TileCount = ReadTileData("../Shared/TileData2", g_TileData, _countof(g_TileData));
+    g_TileCount = ReadTileData("../Shared/Menu", g_TileData, _countof(g_TileData));
     DrawSelected();
 
     HWND Window = CreatePokeWindow("PokeWindow", BITMAP_WIDTH, BITMAP_HEIGHT);

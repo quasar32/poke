@@ -6,7 +6,11 @@
 #define QuadPropEdge    2
 #define QuadPropMessage 4
 #define QuadPropWater   8
-#define CountofQuadProp 4
+#define QuadPropDoor   16
+#define QuadPropExit   32
+#define QuadPropTV     64
+#define QuadPropShelf 128
+#define CountofQuadProp 8
 
 #define SizeOfQuadProps 128 
 #define SizeOfQuadData 512 
@@ -26,12 +30,7 @@
 #define DirRight 2
 #define DirDown 3
 
-#define LastIndex(Array) (_countof(Array) - 1)
-
-#define TEXT_COUNT 16
-
-#define ATTRIBUTE(att) __attribute__((att))
-#define UNUSED ATTRIBUTE(unused)
+#define TEXT_COUNT 256
 
 #define DefaultPallete {0xF8F8F8, 0xA8A8A8, 0x808080, 0x000000}
 #define EditorPallete {\
@@ -41,7 +40,6 @@
 }
 
 #define FirstLevelPallete {0xFFEFFF, 0xCEE7DE, 0xA5D6FF, 0x181010}
-
 
 /*Generic Math Functions*/
 #define Swap(A, B) do {\
@@ -157,7 +155,11 @@ typedef struct bitmap {
 
 typedef struct text {
     BOOL HasText;
+    BOOL IsDoor; 
+    BOOL IsObject;
+    int ObjectSpeed;
     point Pos;
+    point DstPos;
     char Data[256];
     int Index;
 } text;
@@ -191,9 +193,7 @@ typedef struct render_context {
 } render_context;
 
 typedef struct quad_context {
-    array_rect *TileMap;
     array_rect *QuadMap;
-    uint8_t *QuadData;
 } quad_context;
 
 typedef struct command_context {
@@ -202,6 +202,11 @@ typedef struct command_context {
     BOOL CommandMode;
     BOOL InsertMode;
     BOOL Changed;
+    enum {
+        DD_NEITHER,
+        DD_LEFT,
+        DD_RIGHT
+    } DstDim;
 } command_context;
 
 typedef struct shared_context {
@@ -225,9 +230,32 @@ typedef struct object {
     text Text;
 } object;
 
-/**/
-static object g_Objects[16];
-static int g_DefaultQuad = 0;
+
+/*Globals*/
+static object g_Objects[256];
+static text g_Doors[256];
+static int g_DefaultQuad;
+static int g_DataPathI;
+static uint8_t g_TileData[256 * 64];
+static uint8_t g_QuadProps[128];
+static uint8_t g_QuadData[512];
+static array_rect g_TileMap;
+struct {
+    const char *Tile;
+    const char *Quad;
+    const char *Prop;
+} const g_DataPaths[] = {
+    {
+        .Tile = "TileData00",
+        .Quad = "QuadData00",
+        .Prop = "QuadProps00"
+    }, 
+    {
+        .Tile = "TileData01",
+        .Quad = "QuadData01",
+        .Prop = "QuadProps01",
+    }
+};
 
 /*Rect Functions*/
 static int RectRight(rect *Rect)  {
@@ -244,14 +272,6 @@ static point RectTopLeft(rect *Rect) {
 }  
 
 /*Point Functions*/ 
-static point CreatePoint(int X,  int Y)  {
-    point Point = {
-        .X = X,
-        .Y = Y
-    };
-    return Point;
-}
-
 static point ClampPoint(point Point,  rect *Rect)  {
     point ClampPoint = {
         .X = Clamp(Point.X, Rect->X, RectRight(Rect)),
@@ -276,15 +296,6 @@ static point SubPoints(point A, point B) {
     return C;   
 }
 
-UNUSED
-static point DividePoint(point A, int Value) {
-    point C = {
-        .X = A.X / Value,
-        .Y = A.Y / Value
-    };
-    return C;
-}
-
 static BOOL ComparePoints(point A, point B) {
     return A.X == B.X && A.Y == B.Y;
 }
@@ -296,6 +307,7 @@ static point MultiplyPoint(point Point, int Factor) {
     };
     return Result;
 }
+
 /*Array Rect Functions*/
 static uint8_t *ArrayRectGet(array_rect *ArrayRect, int X, int Y) {
     return &ArrayRect->Bytes[X + Y * ArrayRect->Width];
@@ -303,30 +315,6 @@ static uint8_t *ArrayRectGet(array_rect *ArrayRect, int X, int Y) {
 
 static uint8_t *ArrayRectPt(array_rect *ArrayRect, point Point) {
     return &ArrayRect->Bytes[Point.X + Point.Y * ArrayRect->Width];
-}
-
-UNUSED
-static void ArrayRectFill(array_rect *ArrayRect, uint8_t Fill, const rect *Rect) {
-    uint8_t *Byte = ArrayRectGet(ArrayRect, Rect->X, Rect->Y);
-    for(int Y = 0; Y < Rect->Height; Y++) {
-        memset(Byte, Fill, Rect->Width);
-        Byte += ArrayRect->Width;
-    }
-}
-
-UNUSED
-static void ArrayRectRowFill(array_rect *ArrayRect, uint8_t Fill, int FillY, int FillHeight) {
-    uint8_t *Byte = ArrayRectGet(ArrayRect, 0, FillY);
-    memset(Byte, Fill, ArrayRect->Width * FillHeight);
-}
-
-UNUSED
-static void ArrayRectColFill(array_rect *ArrayRect, uint8_t Fill, int FillX, int FillWidth) {
-    uint8_t *Byte = ArrayRectGet(ArrayRect, FillX, 0);
-    for(int Y = 0; Y < ArrayRect->Height; Y++) {
-        memset(Byte, Fill, FillWidth);
-        Byte += ArrayRect->Width;
-    }
 }
 
 static void ArrayRectBoundRect(array_rect *ArrayRect, rect *Rect) {
@@ -418,11 +406,6 @@ static BOOL IsAlphaNumeric(int Char) {
     return IsLetter(Char) || IsNumber(Char);
 }
 
-UNUSED
-static const char *StringifyBool(BOOL Bool) {
-    return Bool ? "True" : "False";
-}
-
 /*SetStillAnimation*/
 static void SetStillAnimation(sprite SpriteQuad[4], int Tile, int Dir, point Location) {
     switch(Dir) {
@@ -457,16 +440,6 @@ static void SetStillAnimation(sprite SpriteQuad[4], int Tile, int Dir, point Loc
         SpriteQuad[SpriteI].Y += Location.Y;
         SpriteQuad[SpriteI].Tile += Tile;
     } 
-}
-
-/*Conversion*/
-UNUSED
-static point ConvertToQuadPoint(point Point) {
-    point QuadPoint = {
-        .X = CoordToQuad(Point.X),
-        .Y = CoordToQuad(Point.Y)
-    };
-    return QuadPoint;
 }
 
 /*Data loaders*/
@@ -513,6 +486,53 @@ static void ReadQuadProps(const char *Path, uint8_t *QuadProps) {
     uint32_t PropsRead = ReadAll(Path, QuadProps, SizeOfQuadProps);
     memset(QuadProps + PropsRead, 0, SizeOfQuadProps - PropsRead);
 }
+/*Translation Functions*/
+static void FillQuad(array_rect *TileMap, uint8_t *Tile, uint8_t *Set) {
+    Tile[0] = Set[0];
+    Tile[1] = Set[1];
+    Tile[TileMap->Width] = Set[2];
+    Tile[TileMap->Width + 1] = Set[3];
+}
+
+static void TranslateQuadsToTiles(uint8_t *QuadData, array_rect *TileMap, rect *TileRect, array_rect *QuadMap, rect *QuadRect) {
+    uint8_t *TileRow = ArrayRectGet(TileMap, TileRect->X, TileRect->Y);
+    uint8_t *QuadRow = ArrayRectGet(QuadMap, QuadRect->X, QuadRect->Y);
+    for(int RelQuadY = 0; RelQuadY < QuadRect->Height; RelQuadY++) {
+        uint8_t *Tile = TileRow;
+        uint8_t *Quad = QuadRow;
+        for(int RelQuadX = 0; RelQuadX < QuadRect->Width; RelQuadX++) {
+            uint8_t *Set = QuadData + *Quad * 4;
+            FillQuad(TileMap, Tile, Set);
+            Tile += 2;
+            Quad++;
+        }
+        TileRow += TileMap->Width * 2;
+        QuadRow += QuadMap->Width;
+    }
+}
+
+static void SetQuadDataArea(const char *Path) {
+    ReadQuadData(Path, g_QuadData);
+
+    uint8_t *Set = g_QuadData;
+    uint8_t *TileRow = ArrayRectGet(&g_TileMap, 1, 1);
+    for(int SetY = 0; SetY < 8; SetY++) {
+        uint8_t *Tile = TileRow;
+        for(int SetX = 0; SetX < 16; SetX++) {
+            FillQuad(&g_TileMap, Tile, Set);
+            Set += 4;
+            Tile += 2;
+        }
+        TileRow += g_TileMap.Width * 2;
+    }
+}
+
+static void ReadDataPath(void) {
+    ReadTileData(g_DataPaths[g_DataPathI].Tile, g_TileData, 96);
+    ReadQuadProps(g_DataPaths[g_DataPathI].Prop, g_QuadProps);
+    SetQuadDataArea(g_DataPaths[g_DataPathI].Quad);
+}
+
 
 static BOOL ReadQuadMap(const char *Path, array_rect *QuadMap, text *Texts) {
     uint8_t RunData[65536];
@@ -590,7 +610,8 @@ static BOOL ReadQuadMap(const char *Path, array_rect *QuadMap, text *Texts) {
                     g_Objects[I].Text.Pos.X = RunData[RunIndex++];
                     g_Objects[I].Text.Pos.Y = RunData[RunIndex++];
                     g_Objects[I].Dir = RunData[RunIndex++];
-                    g_Objects[I].Speed = RunData[RunIndex++];
+                    g_Objects[I].Text.ObjectSpeed = RunData[RunIndex++];
+                    g_Objects[I].Text.IsObject = TRUE;
                     g_Objects[I].Tile = RunData[RunIndex++];
                     g_Objects[I].Text.Index = RunData[RunIndex++];
                     if(g_Objects[I].Text.Index < _countof(g_Objects[I].Text.Data)) {
@@ -613,53 +634,47 @@ static BOOL ReadQuadMap(const char *Path, array_rect *QuadMap, text *Texts) {
         EncodeSuccess = FALSE;
     }
 
+    if(RunIndex < BytesRead) {
+        int Count = RunData[RunIndex++];
+
+        if(Count <= TEXT_COUNT) {
+            for(int I = 0; I < Count; I++) {
+                if(RunIndex < BytesRead - 4) {
+                    g_Doors[I].Pos.X = RunData[RunIndex++]; 
+                    g_Doors[I].Pos.Y = RunData[RunIndex++];
+                    g_Doors[I].DstPos.X = RunData[RunIndex++]; 
+                    g_Doors[I].DstPos.Y = RunData[RunIndex++];
+                    g_Doors[I].Index = RunData[RunIndex++];
+                    if(g_Doors[I].Index < _countof(g_Doors[I].Data)) {
+                        memcpy(g_Doors[I].Data, &RunData[RunIndex], g_Doors[I].Index);
+                        RunIndex += g_Doors[I].Index;
+                        g_Doors[I].Data[g_Doors[I].Index] = '\0';
+                        g_Doors[I].HasText = TRUE;
+                        g_Doors[I].IsDoor = TRUE;
+                    } else {
+                        g_Doors[I].Index = 0; 
+                        EncodeSuccess = FALSE;
+                    }
+                } else {
+                    EncodeSuccess = FALSE;
+                }
+            } 
+        } else {
+            EncodeSuccess = FALSE;
+        }
+    } else {
+        EncodeSuccess = FALSE;
+    }
+
+    if(RunIndex < BytesRead) {
+        g_DataPathI = RunData[RunIndex++];
+        ReadDataPath();
+    } else {
+        EncodeSuccess = FALSE;
+    }
+
     BOOL Success = EncodeSuccess && QuadIndex == Size;
     return Success;
-}
-
-/*Translation Functions*/
-static void FillQuad(array_rect *TileMap, uint8_t *Tile, uint8_t *Set) {
-    Tile[0] = Set[0];
-    Tile[1] = Set[1];
-    Tile[TileMap->Width] = Set[2];
-    Tile[TileMap->Width + 1] = Set[3];
-}
-
-static void TranslateQuadsToTiles(uint8_t *QuadData, array_rect *TileMap, rect *TileRect, array_rect *QuadMap, rect *QuadRect) {
-    uint8_t *TileRow = ArrayRectGet(TileMap, TileRect->X, TileRect->Y);
-    uint8_t *QuadRow = ArrayRectGet(QuadMap, QuadRect->X, QuadRect->Y);
-    for(int RelQuadY = 0; RelQuadY < QuadRect->Height; RelQuadY++) {
-        uint8_t *Tile = TileRow;
-        uint8_t *Quad = QuadRow;
-        for(int RelQuadX = 0; RelQuadX < QuadRect->Width; RelQuadX++) {
-            uint8_t *Set = QuadData + *Quad * 4;
-            FillQuad(TileMap, Tile, Set);
-            Tile += 2;
-            Quad++;
-        }
-        TileRow += TileMap->Width * 2;
-        QuadRow += QuadMap->Width;
-    }
-}
-
-UNUSED
-static void TranslateQuadsToTilesBounded(uint8_t *QuadData, array_rect *TileMap, rect *TileRect, array_rect *QuadMap, rect *QuadRect) {
-    rect QuadOutRect = *QuadRect;
-    ArrayRectBoundRect(QuadMap, &QuadOutRect);
-    rect TileOutRect = {
-        .X = TileRect->X + (QuadOutRect.X - QuadRect->X) * 2,
-        .Y = TileRect->Y + (QuadOutRect.Y - QuadRect->Y) * 2,
-        .Width = QuadOutRect.Width * 2,
-        .Height = QuadOutRect.Height * 2
-    };
-    ArrayRectBoundRect(TileMap, &TileOutRect);
-    if(QuadOutRect.Width < TileOutRect.Width) {
-        QuadOutRect.Width = TileOutRect.Width / 2;
-    }
-    if(QuadOutRect.Height < TileOutRect.Height) {
-        QuadOutRect.Height = TileOutRect.Height / 2;
-    }
-    TranslateQuadsToTiles(QuadData, TileMap, &TileOutRect, QuadMap, &QuadOutRect);
 }
 
 /*Data Writers*/
@@ -738,6 +753,7 @@ static uint32_t WriteQuadMap(const char *Path, array_rect *QuadMap, text *Texts)
     if(RunPtr - RunData >= 65536) {
         return 0;
     }
+
     Count = RunPtr++;
     *Count = 0;
     for(int I = 0; I < _countof(g_Objects); I++) {
@@ -749,7 +765,7 @@ static uint32_t WriteQuadMap(const char *Path, array_rect *QuadMap, text *Texts)
             *RunPtr++ = g_Objects[I].Text.Pos.X;
             *RunPtr++ = g_Objects[I].Text.Pos.Y;
             *RunPtr++ = g_Objects[I].Dir;
-            *RunPtr++ = g_Objects[I].Speed;
+            *RunPtr++ = g_Objects[I].Text.ObjectSpeed;
             *RunPtr++ = g_Objects[I].Tile;
             *RunPtr++ = g_Objects[I].Text.Index;
             g_Objects[I].Text.HasText = TRUE;
@@ -759,6 +775,36 @@ static uint32_t WriteQuadMap(const char *Path, array_rect *QuadMap, text *Texts)
             *Count = *Count + 1;
         }
     }
+
+    if(RunPtr - RunData >= 65536) {
+        return 0;
+    }
+
+    Count = RunPtr++;
+    *Count = 0;
+    for(int I = 0; I < TEXT_COUNT; I++) {
+        if(g_Doors[I].HasText) {
+            if(RunPtr - RunData + g_Doors[I].Index >= 65531) {
+                return 0;
+            } 
+
+            *RunPtr++ = g_Doors[I].Pos.X;
+            *RunPtr++ = g_Doors[I].Pos.Y;
+            *RunPtr++ = g_Doors[I].DstPos.X;
+            *RunPtr++ = g_Doors[I].DstPos.Y;
+            *RunPtr++ = g_Doors[I].Index;
+
+            memcpy(RunPtr, g_Doors[I].Data, g_Doors[I].Index);
+            RunPtr += g_Doors[I].Index;
+            *Count = *Count + 1;
+        }
+    }
+
+    if(RunPtr - RunData >= 65536) {
+        return 0;
+    }
+
+    *RunPtr++ = g_DataPathI;
 
     return WriteAll(Path, RunData, RunPtr - RunData);
 }
@@ -814,7 +860,7 @@ static int WriteChar(uint8_t *Tile, int Char, BOOL Format, int IsFirst) {
     return Increase;
 }
 
-static void PlaceText(array_rect *TileMap, rect *Rect, const char *Text, BOOL Format) {
+static void PlaceChars(array_rect *TileMap, rect *Rect, const char *Text, BOOL Format) {
     uint8_t *TileRow = ArrayRectGet(TileMap, Rect->X, Rect->Y);
     for(int RelY = 0; RelY < Rect->Height; RelY++) {
         uint8_t *Tile = TileRow;
@@ -839,7 +885,7 @@ static void PlaceFormattedText(array_rect *TileMap, rect *Rect, const char *Form
     va_list VariadicList;
     va_start(VariadicList, Format);
     if(vsprintf_s(Text, _countof(Text), Format, VariadicList) >= 0) {
-        PlaceText(TileMap, Rect, Text, FALSE);
+        PlaceChars(TileMap, Rect, Text, FALSE);
     }
     va_end(VariadicList);
 }
@@ -1013,8 +1059,8 @@ static object *AllocObject(point Point, int Tile, int Dir) {
                 *Object = (object) {
                     .Tile = Tile,
                     .Dir = Dir,
-                    .Speed = 1,
                     .Text = {
+                        .IsObject = TRUE,
                         .HasText = TRUE,
                         .Pos = Point
                     }
@@ -1041,9 +1087,26 @@ static text *AllocText(text *Texts, point Point) {
     return NULL;
 }
 
+static text *AllocDoor(point Point) {
+    text *Text = g_Doors;
+    for(int Index = 0; Index < TEXT_COUNT; Index++) {
+        if(!Text->HasText) {
+            *Text = (text) {
+                .HasText = TRUE,
+                .IsDoor = TRUE, 
+                .Pos = Point
+            };
+            return Text;
+        }
+        Text++;
+    }
+    return NULL;
+}
+
 static void ClearText(text *Texts) {
     memset(Texts, 0, TEXT_COUNT * sizeof(*Texts)); 
     memset(g_Objects, 0, sizeof(g_Objects)); 
+    memset(g_Doors, 0, sizeof(g_Doors));
 }
 
 
@@ -1063,14 +1126,16 @@ static int GetRelativeQuadIndex(area *Area) {
 }
 
 /*Section: Area Context*/
-static BOOL MoveSelectTile(area_context *AreaContext, area *Area, point DeltaPoint) {
+static BOOL MoveSelectTile(area_context *AreaContext, area *Area, point DeltaPoint, array_rect *QuadMap) {
     point AreaCursorOld = Area->Cursor;
     int Transform = AreaContext->LockedMode ? 2 : 1;
+    int Width = Area == &AreaContext->QuadMapArea ? Min(Area->Rect.Width, QuadMap->Width * 2) : Area->Rect.Width; 
+    int Height = Area == &AreaContext->QuadMapArea ? Min(Area->Rect.Height, QuadMap->Height * 2) : Area->Rect.Height; 
     rect BoundRect = {
         .X = Area->Rect.X,
         .Y = Area->Rect.Y,
-        .Width = Area->Rect.Width - Transform,
-        .Height = Area->Rect.Height - Transform
+        .Width = Width - Transform,
+        .Height = Height - Transform
     };
     point DeltaTile = MultiplyPoint(DeltaPoint, Transform);
     point Unbound = AddPoints(Area->Cursor, DeltaTile);
@@ -1084,8 +1149,8 @@ static BOOL BoundCam(area_context *AreaContext, array_rect *QuadMap, point Delta
     rect ClampRect = {
         .X = 0,
         .Y = 0,
-        .Width = QuadMap->Width - 16,
-        .Height = QuadMap->Height - 16
+        .Width = Max(0, QuadMap->Width - 16),
+        .Height = Max(0, QuadMap->Height - 16)
     };
 
     AreaContext->QuadMapCam = ClampPoint(AreaContext->QuadMapCam, &ClampRect);
@@ -1099,7 +1164,7 @@ static void UpdateQuadMapArea(quad_context *QuadContext, area_context *AreaConte
         .Width = AreaContext->QuadMapArea.Rect.Width / 2,
         .Height = AreaContext->QuadMapArea.Rect.Height / 2
     };
-    TranslateQuadsToTiles(QuadContext->QuadData, QuadContext->TileMap, &AreaContext->QuadMapArea.Rect, QuadContext->QuadMap, &QuadRect);
+    TranslateQuadsToTiles(g_QuadData, &g_TileMap, &AreaContext->QuadMapArea.Rect, QuadContext->QuadMap, &QuadRect);
 }
 
 static BOOL MoveQuadMapCam(quad_context *QuadContext, area_context *AreaContext, point DeltaPoint) {
@@ -1128,12 +1193,12 @@ static point GetRelativeCursor(area *Area) {
 static BOOL ResizeQuadMap(quad_context *QuadContext, area_context *AreaContext, int DeltaQuadWidth, int DeltaQuadHeight) {
     int NewWidth = QuadContext->QuadMap->Width + DeltaQuadWidth;
     int NewHeight = QuadContext->QuadMap->Height + DeltaQuadHeight;
-    BOOL ValidWidth = NewWidth >= 16 && NewWidth <= 255;
-    BOOL ValidHeight = NewHeight >= 16 && NewHeight <= 255;
+    BOOL ValidWidth = NewWidth > 0 && NewWidth <= 255;
+    BOOL ValidHeight = NewWidth > 0 && NewHeight <= 255;
     BOOL ValidDimensions = ValidWidth && ValidHeight;
     if(ValidDimensions) {
         ArrayRectChangeSize(QuadContext->QuadMap, NewWidth, NewHeight);
-        BoundCam(AreaContext, QuadContext->QuadMap, CreatePoint(0, 0));
+        BoundCam(AreaContext, QuadContext->QuadMap, (point) {0, 0});
         UpdateQuadMapArea(QuadContext, AreaContext);
     }
     return ValidDimensions;
@@ -1149,18 +1214,6 @@ static void RenderSelect(array_rect *Offscreen, int ColorIndex, point Cursor, in
         *ArrayRectGet(Offscreen, X + Width - 1, Y + OffY) = ColorIndex;
     }
     memset(ArrayRectGet(Offscreen, X, Y + Height - 1), ColorIndex, Width);
-}
-
-UNUSED
-static void RenderQuadSelect(array_rect *Offscreen, int ColorIndex, int TileX, int TileY) {
-    int X = TileX * 8;
-    int Y = TileY * 8;
-    memset(ArrayRectGet(Offscreen, X, Y), ColorIndex, 16);
-    for(int OffY = 1; OffY < 15; OffY++) {
-        *ArrayRectGet(Offscreen, X, Y + OffY) = ColorIndex;
-        *ArrayRectGet(Offscreen, X + 15, Y + OffY) = ColorIndex;
-    }
-    memset(ArrayRectGet(Offscreen, X, Y + 15), ColorIndex, 16);
 }
 
 static void UpdateMyWindow(HWND Window, int Width, int Height, void *Pixels, BITMAPINFO *Info) {
@@ -1230,14 +1283,31 @@ static text *GetTextPlace(area_context *AreaContext, text *Texts) {
         point PlacePt = GetPlacePoint(AreaContext);
         Text = FindTextPt(Texts, PlacePt); 
         if(!Text) {
-            object *Object = FindObjectPt(GetPlacePoint(AreaContext)); 
-            if(Object) { 
-                Text = &Object->Text;
+            Text = (text *) FindTextPt(g_Doors, PlacePt);
+            if(!Text) {
+                object *Object = FindObjectPt(GetPlacePoint(AreaContext)); 
+                if(Object) { 
+                    Text = &Object->Text;
+                }
             }
         }
     }
     return Text;
 }
+
+static void UpdateNumber(int *Coord, int Char) {
+    switch(Char) {
+    case '0'...'9':
+        int NewVal = *Coord * 10 + Char - '0';
+        if(NewVal < 255) {
+            *Coord = NewVal;
+        }
+        break;
+    case VK_BACK:
+        *Coord /= 10;
+        break;
+    } 
+} 
 
 static BOOL UpdateCommand(command_context *Context, area_context *AreaContext, text *Texts, int Char) {
     BOOL ToRender = TRUE;
@@ -1246,7 +1316,34 @@ static BOOL UpdateCommand(command_context *Context, area_context *AreaContext, t
         Context->Index = UpdateText(Context->Command, Char, Context->Index, _countof(Context->Command), FALSE);
     } else if(Context->InsertMode) { 
         if(Text) {
-            Text->Index = UpdateText(Text->Data, Char, Text->Index, _countof(Text->Data), TRUE);
+            if(Text->IsDoor) {
+                if(Char == '+') {
+                    Context->DstDim = (Context->DstDim + 1) % (DD_RIGHT + 1);
+                } else switch(Context->DstDim) {
+                case DD_NEITHER:
+                    Text->Index = UpdateText(Text->Data, Char, Text->Index, _countof(Text->Data), FALSE);
+                    break;
+                case DD_LEFT:
+                    UpdateNumber(&Text->DstPos.X, Char);
+                    break;
+                case DD_RIGHT:
+                    UpdateNumber(&Text->DstPos.Y, Char);
+                    break;
+                }
+            } else if(Text->IsObject) {
+                if(Char == '+') {
+                    Context->DstDim = (Context->DstDim + 1) % (DD_LEFT + 1);
+                } else switch(Context->DstDim) {
+                case DD_NEITHER:
+                    Text->Index = UpdateText(Text->Data, Char, Text->Index, _countof(Text->Data), TRUE);
+                    break;
+                case DD_LEFT:
+                    UpdateNumber(&Text->ObjectSpeed, Char);
+                    break;
+                }
+            } else {
+                Text->Index = UpdateText(Text->Data, Char, Text->Index, _countof(Text->Data), TRUE);
+            }
         }
     } else if(Char == ':') {
         Context->CommandMode = TRUE;
@@ -1383,17 +1480,17 @@ static int GetRelativeCursorIndex(area *Area) {
 static void EditQuadAtCursor(quad_context *QuadContext, area_context *AreaContext, area *CurrentArea, area *NextArea) {
     int SelectedTile = GetRelativeCursorIndex(NextArea);
 
-    *ArrayRectPt(QuadContext->TileMap, CurrentArea->Cursor) = SelectedTile;
+    *ArrayRectPt(&g_TileMap, CurrentArea->Cursor) = SelectedTile;
 
     point RelativeCursor = GetRelativeCursor(CurrentArea);
     int SetNumber = GetRelativeQuadIndex(CurrentArea);
     int SetPos = RelativeCursor.X % 2 + RelativeCursor.Y % 2 * 2;
-    QuadContext->QuadData[SetPos + SetNumber * 4] = SelectedTile;
+    g_QuadData[SetPos + SetNumber * 4] = SelectedTile;
 
     UpdateQuadMapArea(QuadContext, AreaContext);
 }
 
-static void ProcessComandContext(command_context *CommandContext, quad_context *QuadContext, area_context *AreaContext, UINT32 *Colors, char *QuadMapPath, uint8_t *QuadProps, text *Texts) {
+static void ProcessComandContext(command_context *CommandContext, quad_context *QuadContext, area_context *AreaContext, UINT32 *Colors, char *QuadMapPath, text *Texts) {
     BOOL Error = FALSE;
     if(strstr(CommandContext->Command, "e ")) {
         strcpy(QuadMapPath, CommandContext->Command + 2);
@@ -1402,7 +1499,7 @@ static void ProcessComandContext(command_context *CommandContext, quad_context *
             DefaultQuadMap(QuadContext->QuadMap);
             ClearText(Texts);
         }
-        AreaContext->QuadMapCam = CreatePoint(0, 0);
+        AreaContext->QuadMapCam = (point) {0, 0};
         UpdateQuadMapArea(QuadContext, AreaContext);
     } else if(strstr(CommandContext->Command, "w ")) {
         strcpy(QuadMapPath, CommandContext->Command + 2);
@@ -1419,8 +1516,8 @@ static void ProcessComandContext(command_context *CommandContext, quad_context *
             PostQuitMessage(0);
         }
     } else if(strcmp(CommandContext->Command, "d") == 0) {
-        BOOL QuadDataSuccess = WriteAllButError("QuadData", QuadContext->QuadData, SizeOfQuadData);
-        BOOL QuadPropSuccess = WriteAllButError("QuadProps", QuadProps, SizeOfQuadProps);
+        BOOL QuadDataSuccess = WriteAllButError(g_DataPaths[g_DataPathI].Quad, g_QuadData, sizeof(g_QuadData));
+        BOOL QuadPropSuccess = WriteAllButError(g_DataPaths[g_DataPathI].Prop, g_QuadProps, sizeof(g_QuadProps));
         Error = !QuadDataSuccess || !QuadPropSuccess;
     } else {
         Error = TRUE;
@@ -1429,20 +1526,19 @@ static void ProcessComandContext(command_context *CommandContext, quad_context *
 }
 
 int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine, int CommandShow) {
-    uint8_t TileData[256 * 64] = {};
+    g_TileMap = CreateStaticArrayRect(67, 44);
     uint8_t SpriteData[256 * TileSize] = {};
     text Texts[TEXT_COUNT] = {};
-    array_rect TileMap = CreateStaticArrayRect(67, 41);
 
     render_context RenderContext = {
         .ToRender = TRUE,
-        .Bitmap = InitBitmap(67 * TileLength, 41 * TileLength, EditorPallete, 6)
+        .Bitmap = InitBitmap(67 * TileLength, 44 * TileLength, EditorPallete, 6)
     };
     command_context CommandContext = {};
     SetCurrentDirectory("../Shared");
 
-    int TileDataCount    = ReadTileData("TileData2", TileData, 256);
-    ReadTileData("Numbers" , TileData + TileDataCount * TileSize, 256 - TileDataCount);
+    int TileDataCount = ReadTileData("TileData2", g_TileData, 256);
+    ReadTileData("Numbers" , g_TileData + TileDataCount * TileSize, 256 - TileDataCount);
     ReadTileData("SpriteData", SpriteData, 256);
 
     /*Area Setup*/
@@ -1478,7 +1574,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
             .Rect.X = 34,
             .Rect.Y = 34,
             .Rect.Width = 15,
-            .Rect.Height = 6,
+            .Rect.Height = 9,
             .Cursor.X = 34,
             .Cursor.Y = 34,
         },
@@ -1494,11 +1590,11 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
 
         .DefaultArea = {
             .Rect.X = 30,
-            .Rect.Y = 18,
+            .Rect.Y = 19,
             .Rect.Width = 1,
             .Rect.Height = 1,
             .Cursor.X = 30,
-            .Cursor.Y = 18,
+            .Cursor.Y = 19,
         },
         
         .SpriteArea = {
@@ -1514,24 +1610,10 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
     area *CurrentArea = &AreaContext.QuadDataArea;
     area *NextArea = &AreaContext.TileDataArea;
 
-    uint8_t QuadProps[256];
-    ReadQuadProps("QuadProps", QuadProps);
+    ReadQuadProps("QuadProps00", g_QuadProps);
 
-    /*QuadData SetUp*/
-    uint8_t QuadData[512];
-    ReadQuadData("QuadData", QuadData);
-
-    uint8_t *Set = QuadData;
-    uint8_t *TileRow = ArrayRectGet(&TileMap, AreaContext.QuadDataArea.Rect.X, AreaContext.QuadDataArea.Rect.Y);
-    for(int SetY = 0; SetY < 8; SetY++) {
-        uint8_t *Tile = TileRow;
-        for(int SetX = 0; SetX < 16; SetX++) {
-            FillQuad(&TileMap, Tile, Set);
-            Set += 4;
-            Tile += 2;
-        }
-        TileRow += TileMap.Width * 2;
-    }
+    /*g_QuadData SetUp*/
+    SetQuadDataArea(g_DataPaths[g_DataPathI].Quad);
 
     /*QuadContext SetUp*/
     char QuadMapPath[32] = {};
@@ -1549,9 +1631,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
     }
 
     quad_context QuadContext = {
-        .TileMap = &TileMap,
         .QuadMap = &QuadMap,
-        .QuadData = QuadData
     };
 
     UpdateQuadMapArea(&QuadContext, &AreaContext);
@@ -1560,7 +1640,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
     int TileX = AreaContext.TileDataArea.Rect.X;
     int TileY = AreaContext.TileDataArea.Rect.Y;
     for(int TileID = 0; TileID < 96; TileID++) {
-        *ArrayRectGet(&TileMap, TileX, TileY) = TileID;
+        *ArrayRectGet(&g_TileMap, TileX, TileY) = TileID;
         TileX++;
         if(TileX >= RectRight(&AreaContext.TileDataArea.Rect)) {
             TileX = AreaContext.TileDataArea.Rect.X;
@@ -1578,41 +1658,41 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
 
     /*Init Area Borders*/
     for(TileX = 1; TileX < 33; TileX++) {
-        *ArrayRectGet(&TileMap, TileX, 17) = 102;
+        *ArrayRectGet(&g_TileMap, TileX, 17) = 102;
     }
 
     for(TileX = 1; TileX < 66; TileX++) {
-        *ArrayRectGet(&TileMap, TileX,  0) =  97;
-        *ArrayRectGet(&TileMap, TileX, 33) = 102;
-        *ArrayRectGet(&TileMap, TileX, 40) = 102;
+        *ArrayRectGet(&g_TileMap, TileX,  0) =  97;
+        *ArrayRectGet(&g_TileMap, TileX, 33) = 102;
+        *ArrayRectGet(&g_TileMap, TileX, 43) = 102;
     }
 
     for(TileY = 1; TileY < 33; TileY++) {
-        *ArrayRectGet(&TileMap,  0, TileY) =  99;
-        *ArrayRectGet(&TileMap, 33, TileY) = 106;
-        *ArrayRectGet(&TileMap, 66, TileY) = 100;
+        *ArrayRectGet(&g_TileMap,  0, TileY) =  99;
+        *ArrayRectGet(&g_TileMap, 33, TileY) = 106;
+        *ArrayRectGet(&g_TileMap, 66, TileY) = 100;
     }
 
-    for(TileY = 34; TileY < 40; TileY++) {
-        *ArrayRectGet(&TileMap,  0, TileY) =  99;
-        *ArrayRectGet(&TileMap, 33, TileY) = 106;
-        *ArrayRectGet(&TileMap, 49, TileY) = 106;
-        *ArrayRectGet(&TileMap, 66, TileY) = 100;
+    for(TileY = 34; TileY < 43; TileY++) {
+        *ArrayRectGet(&g_TileMap,  0, TileY) =  99;
+        *ArrayRectGet(&g_TileMap, 33, TileY) = 106;
+        *ArrayRectGet(&g_TileMap, 49, TileY) = 106;
+        *ArrayRectGet(&g_TileMap, 66, TileY) = 100;
     }
 
-    *ArrayRectGet(&TileMap,  0,  0) =  96;
-    *ArrayRectGet(&TileMap,  0, 17) = 104;
-    *ArrayRectGet(&TileMap,  0, 33) = 104;
-    *ArrayRectGet(&TileMap,  0, 40) = 101;
-    *ArrayRectGet(&TileMap, 33,  0) = 107;
-    *ArrayRectGet(&TileMap, 33, 17) = 110;
-    *ArrayRectGet(&TileMap, 33, 33) = 109;
-    *ArrayRectGet(&TileMap, 33, 40) = 108;
-    *ArrayRectGet(&TileMap, 49, 33) = 107;
-    *ArrayRectGet(&TileMap, 49, 40) = 108;
-    *ArrayRectGet(&TileMap, 66,  0) =  98;
-    *ArrayRectGet(&TileMap, 66, 33) = 105;
-    *ArrayRectGet(&TileMap, 66, 40) = 103;
+    *ArrayRectGet(&g_TileMap,  0,  0) =  96;
+    *ArrayRectGet(&g_TileMap,  0, 17) = 104;
+    *ArrayRectGet(&g_TileMap,  0, 33) = 104;
+    *ArrayRectGet(&g_TileMap,  0, 43) = 101;
+    *ArrayRectGet(&g_TileMap, 33,  0) = 107;
+    *ArrayRectGet(&g_TileMap, 33, 17) = 110;
+    *ArrayRectGet(&g_TileMap, 33, 33) = 109;
+    *ArrayRectGet(&g_TileMap, 33, 43) = 108;
+    *ArrayRectGet(&g_TileMap, 49, 33) = 107;
+    *ArrayRectGet(&g_TileMap, 49, 43) = 108;
+    *ArrayRectGet(&g_TileMap, 66,  0) =  98;
+    *ArrayRectGet(&g_TileMap, 66, 33) = 105;
+    *ArrayRectGet(&g_TileMap, 66, 43) = 103;
 
     /*Window Creation*/
     HWND Window = CreatePokeWindow("PokéEditor", MyWndProc, RenderContext.Bitmap.Pixels.Width, RenderContext.Bitmap.Pixels.Height);
@@ -1659,7 +1739,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
             default:
                 if(CommandContext.CommandMode) {
                     if(Message.wParam == VK_RETURN) {
-                        ProcessComandContext(&CommandContext, &QuadContext, &AreaContext, RenderContext.Bitmap.Info.Colors, QuadMapPath, QuadProps, Texts);
+                        ProcessComandContext(&CommandContext, &QuadContext, &AreaContext, RenderContext.Bitmap.Info.Colors, QuadMapPath, Texts);
                         RenderContext.ToRender = TRUE;
                     }
                 } else if(!CommandContext.InsertMode) {
@@ -1670,7 +1750,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                             RenderContext.ToRender = TRUE;
                             break;
                         case 'L':
-                            *GetCurrentQuadPropPtr(CurrentArea, QuadProps) ^= (1 << PropIndexSelected);
+                            *GetCurrentQuadPropPtr(CurrentArea, g_QuadProps) ^= (1 << PropIndexSelected);
                             RenderContext.ToRender = TRUE;
                             break;
                         }
@@ -1678,16 +1758,16 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                         switch(Message.wParam) {
                         /*Move Camera*/
                         case 'K':
-                            RenderContext.ToRender = MoveQuadMapCam(&QuadContext,  &AreaContext, CreatePoint(0, -1));
+                            RenderContext.ToRender = MoveQuadMapCam(&QuadContext,  &AreaContext, (point) {0, -1});
                             break;
                         case 'H':
-                            RenderContext.ToRender = MoveQuadMapCam(&QuadContext,  &AreaContext, CreatePoint(-1, 0));
+                            RenderContext.ToRender = MoveQuadMapCam(&QuadContext,  &AreaContext, (point) {-1, 0});
                             break;
                         case 'J':
-                            RenderContext.ToRender = MoveQuadMapCam(&QuadContext, &AreaContext, CreatePoint(0, 1));
+                            RenderContext.ToRender = MoveQuadMapCam(&QuadContext, &AreaContext, (point) {0, 1});
                             break;
                         case 'L':
-                            RenderContext.ToRender = MoveQuadMapCam(&QuadContext, &AreaContext, CreatePoint(1, 0));
+                            RenderContext.ToRender = MoveQuadMapCam(&QuadContext, &AreaContext, (point) {1, 0});
                             break;
                         /*Resize*/
                         case VK_UP:
@@ -1711,16 +1791,16 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                     switch(Message.wParam) {
                     /*Current select control*/
                     case 'W':
-                        RenderContext.ToRender = MoveSelectTile(&AreaContext, CurrentArea, CreatePoint(0, -1));
+                        RenderContext.ToRender = MoveSelectTile(&AreaContext, CurrentArea, (point) {0, -1}, &QuadMap);
                         break;
                     case 'A':
-                        RenderContext.ToRender = MoveSelectTile(&AreaContext, CurrentArea, CreatePoint(-1, 0));
+                        RenderContext.ToRender = MoveSelectTile(&AreaContext, CurrentArea, (point) {-1, 0}, &QuadMap);
                         break;
                     case 'S':
-                        RenderContext.ToRender = MoveSelectTile(&AreaContext, CurrentArea, CreatePoint(0, 1));
+                        RenderContext.ToRender = MoveSelectTile(&AreaContext, CurrentArea, (point) {0, 1}, &QuadMap);
                         break;
                     case 'D':
-                        RenderContext.ToRender = MoveSelectTile(&AreaContext, CurrentArea, CreatePoint(1, 0));
+                        RenderContext.ToRender = MoveSelectTile(&AreaContext, CurrentArea, (point) {1, 0}, &QuadMap);
                         break;
                     /*Commands*/
                     case '0':
@@ -1752,6 +1832,11 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                             }
                         }
                         break;
+                    case '3':
+                        g_DataPathI ^= 1;
+                        ReadDataPath();
+                        RenderContext.ToRender = TRUE;
+                        break;
                     }
                 }
             }
@@ -1778,18 +1863,33 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                                 point PlacePt = GetPlacePoint(&AreaContext);
                                 uint8_t *PlacePtr = ArrayRectPt(&QuadMap, PlacePt);
                                 if(*PlacePtr != SelectedQuadTile) {
-                                    if((*PlacePtr & QuadPropMessage) && !(SelectedQuadTile & QuadPropMessage)) {
+                                    if((g_QuadProps[*PlacePtr] & (QuadPropMessage | QuadPropTV)) && !(g_QuadProps[SelectedQuadTile] & (QuadPropMessage | QuadPropTV))) {
                                         text *Text = FindTextPt(Texts, PlacePt); 
                                         if(Text) {
                                             Text->HasText = FALSE;
                                         }
                                     }
+                                    if((g_QuadProps[*PlacePtr] & (QuadPropDoor | QuadPropExit)) && !(g_QuadProps[SelectedQuadTile] & (QuadPropDoor | QuadPropExit))) {
+                                        text *Door = FindTextPt(g_Doors, PlacePt); 
+                                        if(Door) {
+                                            Door->HasText = FALSE;
+                                        }
+                                    }
+
                                     *PlacePtr = SelectedQuadTile;
-                                    uint8_t *Tile = ArrayRectGet(&TileMap, CurrentArea->Cursor.X, CurrentArea->Cursor.Y);
-                                    FillQuad(&TileMap, Tile, QuadData + SelectedQuadTile * 4);
-                                    if(*PlacePtr & QuadPropMessage) {
+                                    uint8_t *Tile = ArrayRectGet(&g_TileMap, CurrentArea->Cursor.X, CurrentArea->Cursor.Y);
+                                    FillQuad(&g_TileMap, Tile, g_QuadData + SelectedQuadTile * 4);
+
+                                    if(g_QuadProps[*PlacePtr] & (QuadPropMessage | QuadPropTV)) {
                                         text *Text = AllocText(Texts, PlacePt);
                                         if(!Text) {
+                                            CloseCommandContext(&CommandContext, "OOM");
+                                        }
+                                    }
+                                    
+                                    if(g_QuadProps[*PlacePtr] & (QuadPropDoor | QuadPropExit)) {
+                                        text *Door = AllocDoor(PlacePt);
+                                        if(!Door) {
                                             CloseCommandContext(&CommandContext, "OOM");
                                         }
                                     }
@@ -1799,7 +1899,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                                 /*PlaceObject*/
                                 int SpriteSetI = (NextArea->Cursor.X - NextArea->Rect.X) / 2;
                                 point Place = GetPlacePoint(&AreaContext);
-                                if(GetQuadProp(&QuadMap, QuadProps, Place) != 0) {
+                                if(GetQuadProp(&QuadMap, g_QuadProps, Place) != 0) {
                                     CloseCommandContext(&CommandContext, "ERR: Invalid position");
                                 } else {
                                     object *Object = AllocObject(Place, SpriteSetI * 14, DirDown);
@@ -1820,7 +1920,9 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
         }
 
 
-        FillQuad(&TileMap, ArrayRectPt(&TileMap, RectTopLeft(&AreaContext.DefaultArea.Rect)), &QuadData[g_DefaultQuad * 4]); 
+        FillQuad(&g_TileMap, ArrayRectPt(&g_TileMap, RectTopLeft(&AreaContext.DefaultArea.Rect)), &g_QuadData[g_DefaultQuad * 4]); 
+        rect SrcRect = {AreaContext.DefaultArea.Rect.X - 5, AreaContext.DefaultArea.Rect.Y - 1, 8, 1}; 
+        PlaceFormattedText(&g_TileMap, &SrcRect, "Data: %2d", g_DataPathI); 
         TranslateMessage(&Message);
         DispatchMessage(&Message);
         if(RenderContext.ToRender) {
@@ -1828,29 +1930,39 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                 point Place = GetPlacePoint(&AreaContext);
                 text *Text = GetTextPlace(&AreaContext, Texts);
                 if(Text) {
-                    const char *Data = "OOM: Message";
-                    if(Text) {
-                        Data = Text->Data;
+                    const char *Data = Text->Data;
+                    if(Text->IsDoor) {
+                        rect SrcRect = AreaContext.DiagArea.Rect;
+                        rect TopRect = {SrcRect.X, SrcRect.Y, SrcRect.Width, 1};
+                        rect BotRect = {SrcRect.X, RectBottom(&SrcRect) - 1, SrcRect.Width, 1};
+
+                        PlaceChars(&g_TileMap, &TopRect, Data, TRUE); 
+                        PlaceFormattedText(&g_TileMap, &BotRect, "Dst %3d %3d", Text->DstPos.X, Text->DstPos.Y); 
+                    } else if(Text->IsObject) {
+                        rect SrcRect = AreaContext.DiagArea.Rect;
+                        rect TopRect = {SrcRect.X, SrcRect.Y, SrcRect.Width, 14};
+                        rect BotRect = {SrcRect.X, RectBottom(&SrcRect) - 1, SrcRect.Width, 1};
+
+                        PlaceChars(&g_TileMap, &TopRect, Data, TRUE); 
+                        PlaceFormattedText(&g_TileMap, &BotRect, "Speed %d", Text->ObjectSpeed); 
                     } else {
-                        Text = AllocText(Texts, Place);
-                        if(Text) {
-                            Data = "";
-                        }
+                        PlaceChars(&g_TileMap, &AreaContext.DiagArea.Rect, Data, TRUE); 
                     }
-                    PlaceText(&TileMap, &AreaContext.DiagArea.Rect, Data, TRUE); 
                 } else {
-                    PlaceText(&TileMap, &AreaContext.DiagArea.Rect, "", FALSE); 
+                    PlaceChars(&g_TileMap, &AreaContext.DiagArea.Rect, "", FALSE); 
                 } 
-                PlaceFormattedText(&TileMap, &AreaContext.TextArea.Rect, 
+                PlaceFormattedText(&g_TileMap, &AreaContext.TextArea.Rect, 
                         "Dim %3d %3d" "\n" "Pos %3d %3d" "\n", 
                         QuadMap.Width, QuadMap.Height, Place.X, Place.Y);
             } else if(CurrentArea == &AreaContext.QuadDataArea && AreaContext.LockedMode) {
-                int Prop = *GetCurrentQuadPropPtr(CurrentArea, QuadProps);
-                PlaceFormattedText(&TileMap, &AreaContext.TextArea.Rect, 
-                        "Solid %d" "\n" "Edge  %d" "\n" "Msg   %d" "\n" "Water %d" "\n", !!(Prop & QuadPropSolid), 
-                        !!(Prop & QuadPropEdge), !!(Prop & QuadPropMessage), !!(Prop & QuadPropWater));
+                int Prop = *GetCurrentQuadPropPtr(CurrentArea, g_QuadProps);
+                PlaceFormattedText(&g_TileMap, &AreaContext.TextArea.Rect, 
+                        "Solid %d" "\n" "Edge  %d" "\n" "Msg   %d" "\n" "Water %d" "\n" 
+                        "Door  %d" "\n" "Exit  %d" "\n" "TV    %d" "\n" "Shelf %d" "\n", 
+                        !!(Prop & QuadPropSolid), !!(Prop & QuadPropEdge), !!(Prop & QuadPropMessage), !!(Prop & QuadPropWater), 
+                        !!(Prop & QuadPropDoor), !!(Prop & QuadPropExit), !!(Prop & QuadPropTV), !!(Prop & QuadPropShelf));
             } else {
-                PlaceText(&TileMap, &AreaContext.TextArea.Rect, "", FALSE);
+                PlaceChars(&g_TileMap, &AreaContext.TextArea.Rect, "", FALSE);
             }
             rect LastRow = {
                 .X = AreaContext.TextArea.Rect.X,
@@ -1858,7 +1970,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                 .Width = AreaContext.TextArea.Rect.Width,
                 .Height = 1,
             };
-            PlaceFormattedText(&TileMap, &LastRow, ":%s", CommandContext.Command);
+            PlaceFormattedText(&g_TileMap, &LastRow, ":%s", CommandContext.Command);
 
             int MaxX = RenderContext.Bitmap.Pixels.Width;
             int MaxY = RenderContext.Bitmap.Pixels.Height;
@@ -1867,14 +1979,14 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
             for(int ObjI = 0; ObjI < _countof(g_Objects); ObjI++) {
                 point ObjPt = SubPoints(g_Objects[ObjI].Text.Pos, AreaContext.QuadMapCam);
                 if(g_Objects[ObjI].Text.HasText && ObjPt.X >= 0 && ObjPt.Y >= 0 && ObjPt.X < 16 && ObjPt.Y < 16) {
-                    point TilePoint = AddPoints(AddPoints(MultiplyPoint(ObjPt, 2), RectTopLeft(&AreaContext.QuadMapArea.Rect)), CreatePoint(1, 1));
+                    point TilePoint = AddPoints(AddPoints(MultiplyPoint(ObjPt, 2), RectTopLeft(&AreaContext.QuadMapArea.Rect)), (point) {1, 1});
                     point SpritePoint = MultiplyPoint(TilePoint, 8);
                     SetStillAnimation(&Sprites[SpriteCount], g_Objects[ObjI].Tile, g_Objects[ObjI].Dir, SpritePoint);
                     SpriteCount += 4;
                 }
             }
 
-            RenderTiles(&RenderContext.Bitmap.Pixels, &TileMap, TileData, CreatePoint(0, 0));
+            RenderTiles(&RenderContext.Bitmap.Pixels, &g_TileMap, g_TileData, (point) {0, 0});
             for(size_t I = SpriteCount; I-- > 0; ) {
                 int RowsToRender = 8;
                 if(Sprites[I].Y < 8) {
@@ -1932,7 +2044,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                 RenderSelect(&RenderContext.Bitmap.Pixels, ColorIndexInactive, NextArea->Cursor, Length, Length);
             }
             if(CurrentArea == &AreaContext.QuadDataArea && AreaContext.LockedMode) {
-                point SelectPoint = CreatePoint(AreaContext.TextArea.Rect.X + 6, AreaContext.TextArea.Rect.Y + PropIndexSelected);
+                point SelectPoint = (point) {AreaContext.TextArea.Rect.X + 6, AreaContext.TextArea.Rect.Y + PropIndexSelected};
                 RenderSelect(&RenderContext.Bitmap.Pixels, ColorIndexActive, SelectPoint, 8, 8);
             }
             InvalidateRect(Window, NULL, FALSE);
