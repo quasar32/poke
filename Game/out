@@ -1,0 +1,12 @@
+main.c: In function 'WinMain':
+main.c:1608:13: error: 'Wo' undeclared (first use in this function)
+ 1608 |             Wo
+      |             ^~
+main.c:1608:13: note: each undeclared identifier is reported only once for each function it appears in
+main.c:1608:15: error: expected ';' before '}' token
+ 1608 |             Wo
+      |               ^
+      |               ;
+ 1609 |         }
+      |         ~      
+mingw32-make: *** [makefile:2: output] Error 1
