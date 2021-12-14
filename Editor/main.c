@@ -27,19 +27,23 @@
 
 #define DirUp 0
 #define DirLeft 1
-#define DirRight 2
-#define DirDown 3
+#define DirDown 2
+#define DirRight 3
 
 #define TEXT_COUNT 256
 
-#define DefaultPallete {0xF8F8F8, 0xA8A8A8, 0x808080, 0x000000}
+uint32_t g_Palletes[][4] = {
+    {0xF8F8F8, 0xA8A8A8, 0x808080, 0x000000},
+    {0xFFEFFF, 0xCEE7DE, 0xA5D6FF, 0x181010},
+    {0xFFEFEF, 0xADE75A, 0xA5D6FF, 0x181010}
+};
+
 #define EditorPallete {\
     0xF8F8F8, 0xA8A8A8,\
     0x808080, 0x000000,\
     0x0000FF, 0xFF0000\
 }
 
-#define FirstLevelPallete {0xFFEFFF, 0xCEE7DE, 0xA5D6FF, 0x181010}
 
 /*Generic Math Functions*/
 #define Swap(A, B) do {\
@@ -239,6 +243,7 @@ static int g_DataPathI;
 static uint8_t g_TileData[256 * 64];
 static uint8_t g_QuadProps[128];
 static uint8_t g_QuadData[512];
+static uint8_t g_PalleteNum = 0;
 static array_rect g_TileMap;
 struct {
     const char *Tile;
@@ -673,6 +678,12 @@ static BOOL ReadQuadMap(const char *Path, array_rect *QuadMap, text *Texts) {
         EncodeSuccess = FALSE;
     }
 
+    if(RunIndex < BytesRead) {
+        g_PalleteNum = RunData[RunIndex++];
+    } else {
+        EncodeSuccess = FALSE;
+    }
+
     BOOL Success = EncodeSuccess && QuadIndex == Size;
     return Success;
 }
@@ -805,6 +816,12 @@ static uint32_t WriteQuadMap(const char *Path, array_rect *QuadMap, text *Texts)
     }
 
     *RunPtr++ = g_DataPathI;
+
+    if(RunPtr - RunData >= 65536) {
+        return 0;
+    }
+
+    *RunPtr++ = g_PalleteNum;
 
     return WriteAll(Path, RunData, RunPtr - RunData);
 }
@@ -1223,9 +1240,9 @@ static void UpdateMyWindow(HWND Window, int Width, int Height, void *Pixels, BIT
 }
 
 static BOOL CharIsValid(char Char, int Index, int Size, BOOL SupportSpecial) {
-    BOOL CharIsValid = IsAlphaNumeric(Char) || Char == ' ' || Char == '!' || Char == 'é';
+    BOOL CharIsValid = IsAlphaNumeric(Char) || Char == ' ' || Char == '!' || Char == 'é' ;
     if(SupportSpecial) {
-        CharIsValid |= Char == '\'' || Char == '\f' || Char == '-' || Char == '\n' || Char == ',' || Char == '.' || Char == '~';
+        CharIsValid |= Char == '\'' || Char == '\f' || Char == '-' || Char == '\n' || Char == ',' || Char == '.' || Char == '~' || Char == ':';
     }
     BOOL CharCanFit = Index + 1 < Size;
     return CharIsValid && CharCanFit;
@@ -1786,6 +1803,13 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                         case VK_RIGHT:
                             RenderContext.ToRender = ResizeQuadMap(&QuadContext, &AreaContext, 1, 0);
                             break;
+                        case VK_INSERT:
+                            object *Object = FindObjectPt(GetPlacePoint(&AreaContext));
+                            if(Object) {
+                                Object->Dir = (Object->Dir + 1) % 4;
+                                RenderContext.ToRender = TRUE;
+                            }
+                            break;
                         }
                     }
                     switch(Message.wParam) {
@@ -1835,6 +1859,10 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                     case '3':
                         g_DataPathI ^= 1;
                         ReadDataPath();
+                        RenderContext.ToRender = TRUE;
+                        break;
+                    case '4':
+                        g_PalleteNum = (g_PalleteNum + 1) % _countof(g_Palletes);
                         RenderContext.ToRender = TRUE;
                         break;
                     }
@@ -1926,6 +1954,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
         TranslateMessage(&Message);
         DispatchMessage(&Message);
         if(RenderContext.ToRender) {
+            memcpy(RenderContext.Bitmap.Info.Colors, g_Palletes[g_PalleteNum], sizeof(g_Palletes[g_PalleteNum]));
             if(CurrentArea == &AreaContext.QuadMapArea) {
                 point Place = GetPlacePoint(&AreaContext);
                 text *Text = GetTextPlace(&AreaContext, Texts);

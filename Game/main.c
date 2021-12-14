@@ -69,7 +69,7 @@ typedef MMRESULT WINAPI(winmm_func)(UINT);
 
 /*Macro Constants*/
 #define ANIM_PLAYER 0
-#define ANIM_SEAL 84
+#define ANIM_SEAL 112
 
 #define BM_WIDTH 160
 #define BM_HEIGHT 144
@@ -133,6 +133,7 @@ typedef struct text {
 typedef struct object {
     point Pos;
 
+    uint8_t StartingDir;
     uint8_t Dir;
     uint8_t Speed;
     uint8_t Tile;
@@ -148,6 +149,7 @@ typedef struct map {
     int16_t Width;
     int16_t Height;
     int16_t DefaultQuad;
+    int16_t PalleteNum;
     uint8_t Quads[256][256];
     point Loaded;
     FC_VEC(text, 256) Texts;
@@ -178,7 +180,7 @@ typedef struct data_path {
     const char *Tile;
     const char *Quad;
     const char *Prop;
-} data_path;  
+} data_path; 
 
 typedef struct world {
     SELECT(data_path, 2) DataPaths;
@@ -407,7 +409,7 @@ static quad_info GetQuad(const world *World, point Point) {
         QuadInfo.Quad = World->Maps.Data[QuadInfo.Map].Quads[QuadInfo.Point.Y][QuadInfo.Point.X];
         QuadInfo.Prop = World->QuadProps[QuadInfo.Quad];
     } else {
-        QuadInfo.Quad = World->Maps.Data[QuadInfo.Map].DefaultQuad;
+        QuadInfo.Quad = World->Maps.Data[World->Maps.I].DefaultQuad;
         QuadInfo.Prop = QUAD_PROP_SOLID;
     }
 
@@ -462,13 +464,14 @@ static void CleanUpWindow(HWND *Window) {
     DisplayAllErrors(*Window); 
     if(Window) {
         DestroyWindow(*Window);
+        *Window = NULL;
     }
-    *Window = NULL;
 }
 
 static void CleanUpHandle(HANDLE *Handle) {
     if(*Handle != INVALID_HANDLE_VALUE) {
         CloseHandle(*Handle);
+        *Handle = INVALID_HANDLE_VALUE;
     }
 } 
 
@@ -498,7 +501,7 @@ static int ReadAll(const char *Path, void *Bytes, int MaxBytesToRead) {
     TRY(FileSize >= 0, "File size could not be obtained", -1);
     TRY(FileSize <= MaxBytesToRead, "File is too big for buffer", -1);
         
-    ReadFile(FileHandle, Bytes, FileSize, &BytesRead, NULL); 
+    TRY(ReadFile(FileHandle, Bytes, FileSize, &BytesRead, NULL), "Could not read file", -1); 
     TRY(BytesRead == FileSize, "Could not read all of file", -1);
 
     return BytesRead;
@@ -597,7 +600,8 @@ static int ReadMap(world *World, int MapI, const char *Path) {
     FOR_VEC(Object, Map->Objects) {
         Object->Pos.X = NEXT_RUN * 16;
         Object->Pos.Y = NEXT_RUN * 16;
-        Object->Dir = NEXT_RUN;  
+        Object->StartingDir = NEXT_RUN;
+        Object->Dir = Object->StartingDir;  
         Object->Speed = NEXT_RUN;
         Object->Tile = NEXT_RUN;
         NEXT_STR(Object->Str);
@@ -632,6 +636,9 @@ static int ReadMap(world *World, int MapI, const char *Path) {
         /*ReadQuadProps*/
         TRY(READ_OBJECT(DataPath->Prop, World->QuadProps), "Could not load quad props", 0);
     }
+
+    /*ReadPalleteNum*/
+    Map->PalleteNum = NEXT_RUN;
 
     /*ExtraneousDataCheck*/
     TRY(RunIndex >= BytesRead, "Extraneous data present", 0);
@@ -803,12 +810,19 @@ static int ObjectInUpdateBounds(point QuadPt) {
 /*World Functions*/
 NONNULL_PARAMS RET_ERROR
 static int LoadNextMap(world *World, int DeltaX, int DeltaY) {
-    point AddTo = {DeltaX, DeltaY};
     point CurMapPt = CUR(&World->Maps)->Loaded;
-    point NewMapPt = AddPoints(CurMapPt, AddTo);
-    if(!EqualPoints(World->Maps.Data[!World->Maps.I].Loaded, NewMapPt)) {
-        if(PointInWorld(NewMapPt)) {
-            TRY(ReadOverworldMap(World, !World->Maps.I, NewMapPt), "Could not load map", 0);
+    if(DeltaX) {
+        point NewMapPtX = {CurMapPt.X + DeltaX, CurMapPt.Y}; 
+        if(PointInWorld(NewMapPtX) && World->MapPaths[NewMapPtX.X][NewMapPtX.Y]) {
+            TRY(ReadOverworldMap(World, !World->Maps.I, NewMapPtX), "Could not load map", 0);
+            return 1;
+        }
+    }
+    if(DeltaY) {
+        point NewMapPtY = {CurMapPt.X, CurMapPt.Y + DeltaY}; 
+        if(PointInWorld(NewMapPtY) && World->MapPaths[NewMapPtY.X][NewMapPtY.Y]) {
+            TRY(ReadOverworldMap(World, !World->Maps.I, NewMapPtY), "Could not load map", 0);
+            return 1;
         }
     }
     return 1;
@@ -828,6 +842,7 @@ static void PlaceMap(const world *World, uint8_t TileMap[32][32], point TileMin,
     }
 }
 
+NONNULL_PARAMS
 static void PlaceViewMap(world *World, uint8_t TileMap[32][32], int IsDown) {
     rect QuadRect = {
         .Left = World->Player.Pos.X / 16 - 4,
@@ -837,6 +852,55 @@ static void PlaceViewMap(world *World, uint8_t TileMap[32][32], int IsDown) {
     };
     point TileMin = {};
     PlaceMap(World, TileMap, TileMin, QuadRect);
+}
+
+/*Tile Functions*/
+NONNULL_PARAMS
+static void PlaceTextBox(uint8_t TileMap[32][32], rect Rect) {
+    /*HeadRow*/
+    TileMap[Rect.Top][Rect.Left] = 96;
+    memset(&TileMap[Rect.Top][Rect.Left + 1], 97, Rect.Right - Rect.Left + 2);
+    TileMap[Rect.Top][Rect.Right - 1] = 98;
+
+    /*BodyRows*/
+    for(int Y = Rect.Top + 1; Y < Rect.Bottom - 1; Y++) {
+        TileMap[Y][Rect.Left] = 99;
+        memset(&TileMap[Y][Rect.Left + 1], 176, Rect.Right - Rect.Left + 2);
+        TileMap[Y][Rect.Right - 1] = 101;
+    }
+
+    /*FootRow*/
+    TileMap[Rect.Bottom - 1][Rect.Left] = 100;
+    memset(&TileMap[Rect.Bottom - 1][Rect.Left + 1], 97, Rect.Right - Rect.Left + 2);
+    TileMap[Rect.Bottom - 1][Rect.Right - 1] = 102;
+}
+
+static int CharToTile(int Char) {
+    int Output = Char;
+    if(Output == '.') {
+        Output = 175;
+    } else if(Output >= '0' && Output <= ':') {
+        Output += 103 - '0';
+    } else if(Output >= 'A' && Output <= 'Z') {
+        Output += 114 - 'A';
+    } else if(Output >= 'a' && Output <= 'z') {
+        Output += 140 - 'a';
+    } else if(Output == '!') {
+        Output = 168;
+    } else if(Output == 'é') {
+        Output = 166;
+    } else if(Output == '\'') {
+        Output = 169;
+    } else if(Output == '~') {
+        Output = 172;
+    } else if(Output == '-') {
+        Output = 170;
+    } else if(Output == ',') {
+        Output = 173; 
+    } else {
+        Output = 176;
+    }
+    return Output;
 }
 
 /*Win32 Functions*/
@@ -895,6 +959,28 @@ static LRESULT CALLBACK WndProc(HWND Window, UINT Message, WPARAM WParam, LPARAM
 int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLine, int CmdShow) {
     srand(time(NULL));
 
+    /*InitPalletes*/
+    const RGBQUAD Palletes[256][4] = {
+        {
+            {0xFF, 0xEF, 0xFF, 0x00},
+            {0xA8, 0xA8, 0xA8, 0x00},
+            {0x80, 0x80, 0x80, 0x00},
+            {0x10, 0x10, 0x18, 0x00}
+        },
+        {
+            {0xFF, 0xEF, 0xFF, 0x00}, 
+            {0xDE, 0xE7, 0xCE, 0x00},
+            {0xFF, 0xD6, 0xA5, 0x00},
+            {0x10, 0x10, 0x18, 0x00}
+        },
+        {
+            {0xFF, 0xEF, 0xFF, 0x00},
+            {0x5A, 0xE7, 0xAD, 0x00},
+            {0xFF, 0xD6, 0xA5, 0x00},
+            {0x10, 0x10, 0x18, 0x00}
+        }
+    };
+
     /*InitBitmap*/
     g_BmInfo = alloca(sizeof(BITMAPINFOHEADER) + sizeof(RGBQUAD) * 4);
     g_BmInfo->bmiHeader = (BITMAPINFOHEADER) {
@@ -906,14 +992,6 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         .biCompression = BI_RGB,
         .biClrUsed = 4
     };
-
-    const RGBQUAD GrayScalePallete[4] = { 
-        {0xF8, 0xF8, 0xF8, 0x00},
-        {0xA8, 0xA8, 0xA8, 0x00},
-        {0x80, 0x80, 0x80, 0x00},
-        {0x00, 0x00, 0x00, 0x00}
-    };
-    COPY_OBJECT(g_BmInfo->bmiColors, GrayScalePallete);
 
     /*InitWindow*/
     WNDCLASS WindowClass = {
@@ -1012,12 +1090,11 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
 
     /*WindowMap*/
     uint8_t WindowMap[32][32];
-    uint8_t WindowY = 144;
 
     /*PlayerState*/
     int IsLeaping = 0;
-    int IsDialog = 0;
     int IsTransition = 0; 
+    int IsPaused = 0;
     int TransitionTick = 0;
     point DoorPoint;
     
@@ -1027,7 +1104,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     int IsFullscreen = 0;
 
     /*Text*/
-    const char *ActiveText = "Text not init";
+    const char *ActiveText = NULL;
     point TextTilePt = {1, 14};
     uint64_t TextTick = 0;
 
@@ -1096,7 +1173,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         }
 
         /*UpdatePlayer*/
-        if(IsDialog) {
+        if(ActiveText) {
             if(ActiveText[0]) {
                 switch(TextTilePt.Y) {
                 case 17:
@@ -1144,42 +1221,15 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                         TextTilePt.Y = 18;
                         break;
                     default:
-                        /*RenderNextChar*/
-                        {
-                            int Output = ActiveText[0];
-                            if(Output == '.') {
-                                Output = 175;
-                            } else if(Output >= '0' && Output <= ':') {
-                                Output += 103 - '0';
-                            } else if(Output >= 'A' && Output <= 'Z') {
-                                Output += 114 - 'A';
-                            } else if(Output >= 'a' && Output <= 'z') {
-                                Output += 140 - 'a';
-                            } else if(Output == '!') {
-                                Output = 168;
-                            } else if(Output == 'é') {
-                                Output = 166;
-                            } else if(Output == '\'') {
-                                Output = 169;
-                            } else if(Output == '~') {
-                                Output = 172;
-                            } else if(Output == '-') {
-                                Output = 170;
-                            } else if(Output == ',') {
-                                Output = 173; 
-                            } else {
-                                Output = 176;
-                            }
-                            WindowMap[TextTilePt.Y][TextTilePt.X] = Output;
-                        }
+                        WindowMap[TextTilePt.Y][TextTilePt.X] = CharToTile(*ActiveText);
                         TextTilePt.X++;
                     }
                     ActiveText++;
                 }
             } else if(g_Keys['X']) {
-                IsDialog = 0;
-                WindowY = 144;
+                ActiveText = NULL;
                 g_Keys['X'] = 0;
+                memset(WindowMap, 0, sizeof(WindowMap));
             }
         } else if(IsTransition) {
             /*EnterTransition*/
@@ -1195,16 +1245,16 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 if(TransitionTick-- > 0) {
                     switch(TransitionTick) {
                     case 12:
-                        g_BmInfo->bmiColors[0] = GrayScalePallete[1]; 
-                        g_BmInfo->bmiColors[1] = GrayScalePallete[2]; 
-                        g_BmInfo->bmiColors[2] = GrayScalePallete[3]; 
+                        g_BmInfo->bmiColors[0] = Palletes[CUR(&World.Maps)->PalleteNum][1]; 
+                        g_BmInfo->bmiColors[1] = Palletes[CUR(&World.Maps)->PalleteNum][2]; 
+                        g_BmInfo->bmiColors[2] = Palletes[CUR(&World.Maps)->PalleteNum][3]; 
                         break;
                     case 8:
-                        g_BmInfo->bmiColors[0] = GrayScalePallete[2]; 
-                        g_BmInfo->bmiColors[1] = GrayScalePallete[3]; 
+                        g_BmInfo->bmiColors[0] = Palletes[CUR(&World.Maps)->PalleteNum][2]; 
+                        g_BmInfo->bmiColors[1] = Palletes[CUR(&World.Maps)->PalleteNum][3]; 
                         break;
                     case 4:
-                        g_BmInfo->bmiColors[0] = GrayScalePallete[3]; 
+                        g_BmInfo->bmiColors[0] = Palletes[CUR(&World.Maps)->PalleteNum][3]; 
                         break;
                     case 0:
                         /*LoadDoorMap*/
@@ -1227,7 +1277,6 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                         /*CompleteTransition*/
                         ScrollX = 0;
                         ScrollY = 0;
-                        COPY_OBJECT(g_BmInfo->bmiColors, GrayScalePallete);
 
                         memset(OldMap, 0, sizeof(*OldMap));
                         IsTransition = 0;
@@ -1243,6 +1292,12 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                     }
                 }
             }
+        } else if(IsPaused) {
+
+        } else if(g_Keys[VK_RETURN]) {
+            IsPaused = 1; 
+            memset(WindowMap, 0, sizeof(WindowMap));
+            PlaceTextBox(WindowMap, (rect) {10, 0, 20, 14}); 
         } else {
             /*PlayerUpdate*/
             if(World.Player.Tick == 0) {
@@ -1303,31 +1358,23 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                     }
                 }
 
-                
                 /*PlayerTestProp*/
                 if(g_Keys['X']) {
                     int IsTV = NewQuadInfo.Prop & QUAD_PROP_TV;
                     int IsShelf = NewQuadInfo.Prop & QUAD_PROP_SHELF && World.Player.Dir == DIR_UP;
                     if(NewQuadInfo.Prop & QUAD_PROP_MESSAGE || IsTV || IsShelf) {
-                        IsDialog = 1;
-                        WindowY = 96;
                         g_Keys['X'] = 0;
-
-                        /*PlaceTextBox*/
-                        uint8_t TextBoxHeadRow[] = {96, [1 ... 18] = 97, 98};
-                        uint8_t TextBoxBodyRow[] = {99, [1 ... 18] = 176, 101};
-                        uint8_t TextBoxFooterRow[] = {100, [1 ... 18] = 97, 102};
-                        COPY_OBJECT(WindowMap[12], TextBoxHeadRow);
-                        for(int Y = 13; Y < 17; Y++) {
-                            COPY_OBJECT(WindowMap[Y], TextBoxBodyRow);
-                        }
-                        COPY_OBJECT(WindowMap[17], TextBoxFooterRow);
+                        memset(WindowMap, 0, sizeof(WindowMap));
+                        PlaceTextBox(WindowMap, (rect) {0, 12, 20, 18});
 
                         /*GetActiveText*/
                         if(IsShelf) {
                             ActiveText = "Crammed full of\nPOKéMON books!"; 
                         } else if(FacingObject) {
                             ActiveText = FacingObject->Str.Data;
+                            if(FacingObject->Speed == 0) {
+                                FacingObject->Tick = 60;
+                            }
                             FacingObject->Dir = ReverseDir(World.Player.Dir);
                         } else if(IsTV && World.Player.Dir != DIR_UP) {
                            ActiveText = "Oops, wrong side."; 
@@ -1345,7 +1392,8 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                             World.Player.Tile = ANIM_SEAL;
                             HasMoveKey = 1;
                         }
-                    } else if(World.Player.Tile == ANIM_SEAL && !(NewQuadInfo.Prop & QUAD_PROP_SOLID)) {
+                    } else if(World.Player.Tile == ANIM_SEAL && 
+                              !(NewQuadInfo.Prop & QUAD_PROP_SOLID)) {
                         World.Player.Tile = ANIM_PLAYER;
                         HasMoveKey = 1;
                     }
@@ -1362,8 +1410,8 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 }
 
                 if(HasMoveKey) {
-                    /*MovePlayer*/
                     IsLeaping = 0;
+                    /*MovePlayer*/
                     if(NewQuadInfo.Prop & QUAD_PROP_DOOR) {
                         World.Player.IsMoving = 1;
                         World.Player.Tick = 8; 
@@ -1403,7 +1451,8 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                             AddToX = -1;
                         } else if(NewPoint.X == CUR(&World.Maps)->Width - 4) {
                             AddToX = 1;
-                        } else if(NewPoint.Y == 4) {
+                        }
+                        if(NewPoint.Y == 4) {
                             AddToY = -1;
                         } else if(NewPoint.Y == CUR(&World.Maps)->Height - 4) {
                             AddToY = 1;
@@ -1479,7 +1528,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         sprite *SpriteQuad = &Sprites[SprI];
         point PlayerPt = {72, 72};
         UpdateAnimation(&World.Player, SpriteQuad, PlayerPt);
-        if(!IsDialog && World.Player.Tick > 0) {
+        if(!ActiveText && World.Player.Tick > 0) {
             MoveEntity(&World.Player);
             if(World.Player.IsMoving) {
                 switch(World.Player.Dir) {
@@ -1497,6 +1546,8 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                     break;
                 }
             }
+        } else {
+            IsLeaping = 0;
         }
         SprI += 4;
    
@@ -1529,10 +1580,16 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 if(ObjectInUpdateBounds(QuadPt)) {
                     UpdateAnimation(Object, SpriteQuad, QuadPt);
                     /*TickFrame*/
-                    if(!IsDialog) {
-                        if(Object->Tick > 0) {
+                    if(!ActiveText) {
+                        if(Object->Speed == 0) {
+                            if(Object->Tick > 0) {
+                                Object->Tick--; 
+                            } else {
+                                Object->Dir = Object->StartingDir;
+                            }
+                        } else if(Object->Tick > 0) {
                             MoveEntity(Object);
-                        } else if(!IsTransition) {
+                        } else if(!IsTransition)  {
                             RandomMove(&World, MapI, Object);
                         }
                     }
@@ -1573,12 +1630,15 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
             memcpy(WaterDst, WaterSrc, TILE_SIZE);
         }
 
+        /*UpdatePallete*/
+        if(!IsTransition && World.Player.Tick <= 0) {
+            COPY_OBJECT(g_BmInfo->bmiColors, Palletes[CUR(&World.Maps)->PalleteNum]);
+        }
+
         /*RenderTiles*/
         uint8_t (*BmRow)[BM_WIDTH] = g_BmPixels;
-
-        int MaxPixelY = WindowY < BM_HEIGHT ? WindowY : BM_HEIGHT; 
-
-        for(int PixelY = 0; PixelY < MaxPixelY; PixelY++) {
+        
+        for(int PixelY = 0; PixelY < BM_HEIGHT; PixelY++) {
             #define GET_TILE_SRC(Off) (World.TileData + (Off) + TileMap[TileY][TileX] * TILE_SIZE)
             int PixelX = 8 - (ScrollX & 7);
             int SrcYDsp = ((PixelY + ScrollY) & 7) << 3;
@@ -1600,24 +1660,9 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
             BmRow++;
         }
 
-        for(int PixelY = MaxPixelY; PixelY < BM_HEIGHT; PixelY++) {
-            int PixelX = 0;
-            int SrcYDsp = (PixelY & 7) << 3;
-            int TileX = 0;
-            int TileY = PixelY / 8;
-
-            for(int Repeat = 0; Repeat < 20; Repeat++) {
-                uint8_t *Src = World.TileData + SrcYDsp + WindowMap[TileY][TileX] * TILE_SIZE;
-                memcpy(*BmRow + PixelX, Src, 8);
-                TileX++;
-                PixelX += 8;
-            }
-            BmRow++;
-        }
-
         /*RenderSprites*/
         int MaxX = BM_WIDTH;
-        int MaxY = WindowY < BM_HEIGHT ? WindowY : BM_HEIGHT;
+        int MaxY = BM_HEIGHT;
 
         for(size_t I = SprI; I-- > 0; ) {
             int RowsToRender = 8;
@@ -1662,6 +1707,25 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 }
                 Src += DispY;
             }
+        }
+
+        /*RenderWindowTiles*/
+        BmRow = g_BmPixels;
+        for(int PixelY = 0; PixelY < BM_HEIGHT; PixelY++) {
+            int PixelX = 0;
+            int SrcYDsp = (PixelY & 7) << 3;
+            int TileX = 0;
+            int TileY = PixelY / 8;
+
+            for(int Repeat = 0; Repeat < 20; Repeat++) {
+                if(WindowMap[TileY][TileX]) {
+                    uint8_t *Src = World.TileData + SrcYDsp + WindowMap[TileY][TileX] * TILE_SIZE;
+                    memcpy(*BmRow + PixelX, Src, 8);
+                }
+                TileX++;
+                PixelX += 8;
+            }
+            BmRow++;
         }
 
         /*UpdateFullscreen*/
