@@ -1094,7 +1094,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     /*PlayerState*/
     int IsLeaping = 0;
     int IsTransition = 0; 
-    int IsPaused = 0;
+    int IsMenuUp = 0;
     int TransitionTick = 0;
     point DoorPoint;
     
@@ -1109,7 +1109,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     uint64_t TextTick = 0;
 
     /*Timing*/
-    uint64_t Tick = 0;
+    int64_t Tick = 0;
     int64_t BeginCounter = 0;
     int64_t PerfFreq = GetPerfFreq();
     int64_t FrameDelta = PerfFreq / 30;
@@ -1136,7 +1136,12 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
     while(!HasQuit) {
         BeginCounter = GetPerfCounter();
 
-        int TickCycle = Tick / 16;
+        /*UpdateKeyFrameCount*/
+        FOR_ARY(Key, g_Keys) {
+            if(*Key > 0 && *Key < 255) {
+                *Key += 1;
+            }
+        }
 
         /*ProcessMessage*/
         MSG Message;
@@ -1158,7 +1163,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                     IsFullscreen ^= 1;
                     break;
                 default:
-                    if(!(Message.lParam & LPARAM_KEY_IS_HELD)) {
+                    if(!(Message.lParam & LPARAM_KEY_IS_HELD) && g_Keys[Message.wParam] == 0) {
                         g_Keys[Message.wParam] = 1;
                     }
                 }
@@ -1195,7 +1200,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 case 18:
                     /*MoreTextWait*/
                     WindowMap[16][18] = TextTick / 16 % 2 ? 176 : 171;
-                    if(g_Keys['X']) {
+                    if(g_Keys['X'] == 1) {
                         if(ActiveText[-1] == '\n') {
                             memcpy(&WindowMap[13][1], &WindowMap[14][1], 17);
                             memcpy(&WindowMap[15][1], &WindowMap[16][1], 17);
@@ -1203,7 +1208,6 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                         memset(&WindowMap[14][1], 176, 17);
                         memset(&WindowMap[16][1], 176, 18);
                         TextTilePt.Y = 17;
-                        g_Keys['X'] = 0;
                         TextTick = 4;
                     } else {
                         TextTick++;
@@ -1226,9 +1230,8 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                     }
                     ActiveText++;
                 }
-            } else if(g_Keys['X']) {
+            } else if(g_Keys['X'] == 1) {
                 ActiveText = NULL;
-                g_Keys['X'] = 0;
                 memset(WindowMap, 0, sizeof(WindowMap));
             }
         } else if(IsTransition) {
@@ -1292,11 +1295,13 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                     }
                 }
             }
-        } else if(IsPaused) {
-
-        } else if(g_Keys[VK_RETURN]) {
-            IsPaused = 1; 
-            memset(WindowMap, 0, sizeof(WindowMap));
+        } else if(IsMenuUp) {
+            if(g_Keys[VK_RETURN] == 1) {
+                IsMenuUp = 0; 
+                memset(WindowMap, 0, sizeof(WindowMap));
+            } 
+        } else if(g_Keys[VK_RETURN] == 1) {
+            IsMenuUp = 1; 
             PlaceTextBox(WindowMap, (rect) {10, 0, 20, 14}); 
         } else {
             /*PlayerUpdate*/
@@ -1338,17 +1343,16 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
 
                 object *FacingObject = NULL; 
                 FOR_VEC(Object, CUR(&World.Maps)->Objects) {
-                    point OtherOldPoint = PtToQuadPt(Object->Pos);
+                    point ObjOldPt = PtToQuadPt(Object->Pos);
                     if(Object->Tick > 0) {
-                        point OtherDirPoint = g_NextPoints[Object->Dir];
-                        point OtherNewPoint = AddPoints(OtherOldPoint, OtherDirPoint);
-                        if(EqualPoints(TestPoint, OtherOldPoint) ||
-                           EqualPoints(TestPoint, OtherNewPoint)) {
+                        point ObjDirPt = g_NextPoints[Object->Dir];
+                        point ObjNewPt = AddPoints(ObjOldPt, ObjDirPt);
+                        if(EqualPoints(TestPoint, ObjOldPt) || EqualPoints(TestPoint, ObjNewPt)) {
                             NewQuadInfo.Prop = QUAD_PROP_SOLID;
                             FacingObject = Object;
                             break;
                         }
-                    } else if(EqualPoints(TestPoint, OtherOldPoint)) {
+                    } else if(EqualPoints(TestPoint, ObjOldPt)) {
                         NewQuadInfo.Prop = QUAD_PROP_SOLID;
                         if(!AttemptLeap) {
                             NewQuadInfo.Prop |= QUAD_PROP_MESSAGE;
@@ -1359,12 +1363,10 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
                 }
 
                 /*PlayerTestProp*/
-                if(g_Keys['X']) {
+                if(g_Keys['X'] == 1) {
                     int IsTV = NewQuadInfo.Prop & QUAD_PROP_TV;
                     int IsShelf = NewQuadInfo.Prop & QUAD_PROP_SHELF && World.Player.Dir == DIR_UP;
                     if(NewQuadInfo.Prop & QUAD_PROP_MESSAGE || IsTV || IsShelf) {
-                        g_Keys['X'] = 0;
-                        memset(WindowMap, 0, sizeof(WindowMap));
                         PlaceTextBox(WindowMap, (rect) {0, 12, 20, 18});
 
                         /*GetActiveText*/
@@ -1617,6 +1619,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
         }
 
         /*MutTileUpdate*/
+        int TickCycle = Tick / 16 % 9;
         if(Tick % 16 == 0 && World.IsOverworld) {
             /*FlowersUpdate*/
             uint8_t *FlowerDst = World.TileData + 3 * TILE_SIZE;
@@ -1624,7 +1627,7 @@ int WINAPI WinMain(HINSTANCE Instance, UNUSED HINSTANCE Prev, UNUSED LPSTR CmdLi
             memcpy(FlowerDst, FlowerSrc, TILE_SIZE);
 
             /*WaterUpdate*/
-            int TickMod = TickCycle % 9 < 5 ? TickCycle % 9 : 9 - TickCycle % 9;
+            int TickMod = TickCycle < 5 ? TickCycle : 9 - TickCycle;
             uint8_t *WaterDst = World.TileData + 20 * TILE_SIZE;
             uint8_t *WaterSrc = WaterData + TickMod * TILE_SIZE;
             memcpy(WaterDst, WaterSrc, TILE_SIZE);
