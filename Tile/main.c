@@ -93,7 +93,7 @@ int main(int argc, char *argv[]) {
     if(strcmp(argv[3], "Entity") == 0) {
         static uint8_t Output2[4194304];
         int EntityCount = OutputSize / SizeOfCompressedTile / 20;
-        int Transfer[] = {5, 15, 13, 14, 6, 7, 16, 17, 18, 19, 2, 12, 10, 11};
+        int Transfer[] = {5, 15, 13, 14, 6, 7, 16, 17, 18, 19, 2, 12, 10, 11, 8, 9};
         uint8_t *OutPtr = Output2;
         uint8_t *InPtr = Output;
         for(int I = 0; I < EntityCount; I++) {

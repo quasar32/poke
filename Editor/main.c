@@ -1315,11 +1315,13 @@ static text *GetTextPlace(area_context *AreaContext, text *Texts) {
 static void UpdateNumber(int *Coord, int Char) {
     switch(Char) {
     case '0'...'9':
-        int NewVal = *Coord * 10 + Char - '0';
-        if(NewVal < 255) {
-            *Coord = NewVal;
+        {
+            int NewVal = *Coord * 10 + Char - '0';
+            if(NewVal < 255) {
+                *Coord = NewVal;
+            }
+            break;
         }
-        break;
     case VK_BACK:
         *Coord /= 10;
         break;
@@ -1670,7 +1672,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
     int SpriteCount = 64;
     for(int QuadX = 0; QuadX < 8; QuadX++) {
         point QuadPoint = {QuadX * 16 + 16, 280};
-        SetStillAnimation(&Sprites[QuadX * 4], QuadX * 14, DirDown, QuadPoint);
+        SetStillAnimation(&Sprites[QuadX * 4], QuadX * 16, DirDown, QuadPoint);
     }
 
     /*Init Area Borders*/
@@ -1804,10 +1806,12 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                             RenderContext.ToRender = ResizeQuadMap(&QuadContext, &AreaContext, 1, 0);
                             break;
                         case VK_INSERT:
-                            object *Object = FindObjectPt(GetPlacePoint(&AreaContext));
-                            if(Object) {
-                                Object->Dir = (Object->Dir + 1) % 4;
-                                RenderContext.ToRender = TRUE;
+                            {
+                                object *Object = FindObjectPt(GetPlacePoint(&AreaContext));
+                                if(Object) {
+                                    Object->Dir = (Object->Dir + 1) % 4;
+                                    RenderContext.ToRender = TRUE;
+                                }
                             }
                             break;
                         }
@@ -1930,7 +1934,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                                 if(GetQuadProp(&QuadMap, g_QuadProps, Place) != 0) {
                                     CloseCommandContext(&CommandContext, "ERR: Invalid position");
                                 } else {
-                                    object *Object = AllocObject(Place, SpriteSetI * 14, DirDown);
+                                    object *Object = AllocObject(Place, SpriteSetI * 16, DirDown);
                                     if(!Object) { 
                                         CloseCommandContext(&CommandContext, "OOM: Objects");
                                     }
