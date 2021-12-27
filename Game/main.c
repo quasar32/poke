@@ -450,7 +450,7 @@ static uint8_t RunBufferGetByte(run_buffer *RunBuffer) {
 static void RunBufferGetString(run_buffer *RunBuffer, char Str[256]) {
     uint8_t Length = RunBufferGetByte(RunBuffer); 
     int Left = RunBuffer->Size - RunBuffer->Index; 
-    if(Length < Left) {
+    if(Left < Length) {
         Length = Left;
     }
     memcpy(Str, &RunBuffer->Data[RunBuffer->Index], Length);
@@ -1504,6 +1504,17 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                 memset(WindowMap, 0, sizeof(WindowMap));
                 PlaceMenu(WindowMap, MenuSelectI);
             } else {
+                int OptionPosI[] = {3, 8, 13, 16}; 
+                /*MoveOptionsCursor*/
+                if(Keys[VK_UP] == 1) {
+                    WindowMap[OptionPosI[OptionSelectI]][1] = MT_BLANK;
+                    OptionSelectI = PosIntMod(OptionSelectI - 1, _countof(OptionPosI)); 
+                    WindowMap[OptionPosI[OptionSelectI]][1] = MT_FULL_HORZ_ARROW;
+                } else if(Keys[VK_DOWN] == 1) {
+                    WindowMap[OptionPosI[OptionSelectI]][1] = MT_BLANK;
+                    OptionSelectI = PosIntMod(OptionSelectI + 1, _countof(OptionPosI)); 
+                    WindowMap[OptionPosI[OptionSelectI]][1] = MT_FULL_HORZ_ARROW;
+                }
             }
             break;
         }
