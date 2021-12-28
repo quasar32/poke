@@ -125,7 +125,7 @@ static void WriteTileData(void) {
             }
         }
     }
-    WriteAll("../Shared/WaterData", OutTileData, g_TileCount * 16); 
+    WriteAll("../Shared/Menu", OutTileData, g_TileCount * 16); 
 }
 
 /*Drawer*/
@@ -273,7 +273,7 @@ static LRESULT CALLBACK WndProc(HWND Window, UINT Message, WPARAM WParam, LPARAM
                 DrawSelected();
                 InvalidateRect(Window, NULL, FALSE);
             }
-            break;
+            break
         case VK_DOWN:
             WriteTileData();
             break;
@@ -330,7 +330,7 @@ static HWND CreatePokeWindow(const char *WindowName, int ClientWidth, int Client
 
 __attribute__((nonnull(1, 3)))
 int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdShow) {
-    g_TileCount = ReadTileData("../Shared/WaterData", g_TileData, _countof(g_TileData));
+    g_TileCount = ReadTileData("../Shared/Menu", g_TileData, _countof(g_TileData));
     DrawSelected();
 
     HWND Window = CreatePokeWindow("PokeWindow", BITMAP_WIDTH, BITMAP_HEIGHT);

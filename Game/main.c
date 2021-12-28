@@ -80,6 +80,7 @@
     
 #define MT_FULL_HORZ_ARROW 174
 #define MT_BLANK 176 
+#define MT_EMPTY_HORZ_ARROW 177
 
 /*Structures*/
 typedef struct point {
@@ -183,6 +184,13 @@ typedef struct run_buffer {
     int Index;
     int Size;
 } run_buffer;
+
+typedef struct option {
+    int Y;
+    int Xs[3];
+    int I;
+    int Count;
+} option;
 
 /*Global Constants*/
 static const point g_DirPoints[] = {
@@ -676,9 +684,6 @@ static void UpdateAnimation(object *Object, sprite *SpriteQuad, point QuadPt) {
             SpriteQuad[3] = (sprite) {8, 8, 8, SPR_HORZ_FLAG};
             break;
         }
-        if(Object->Tick % 8 == 4) {
-            Object->IsRight ^= 1;
-        }
     }
 
     /*SetSpriteQuad*/
@@ -813,6 +818,10 @@ static void PlaceMenu(uint8_t WindowMap[32][32], int MenuSelectI) {
         "POKéMON\nITEM\nRED\nSAVE\nOPTION\nEXIT" 
     ); 
     WindowMap[MenuSelectI * 2 + 2][11] = MT_FULL_HORZ_ARROW;
+}
+
+static void PlaceOptionCursor(uint8_t WindowMap[32][32], option *Option, int Tile) {
+    WindowMap[Option->Y][Option->Xs[Option->I]] = Tile;
 }
 
 /*Win32 Functions*/
@@ -1019,7 +1028,37 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
     /*InitMenuData*/
     int IsPauseAttempt = 0;
     int MenuSelectI = 0;
-    int OptionSelectI = 0; 
+    int OptionI = 0; 
+
+    enum option_names {
+        OPT_TEXT_SPEED,
+        OPT_BATTLE_ANIMATION, 
+        OPT_BATTLE_STYLE,
+        OPT_CANCEL,
+    };
+
+    option Options[] = {
+        [OPT_TEXT_SPEED] = {
+            .Y = 3,
+            .Xs = {1, 7, 14},
+            .Count = 3
+        },
+        [OPT_BATTLE_ANIMATION] = {
+            .Y = 8,
+            .Xs = {1, 10},
+            .Count = 2
+        },
+        [OPT_BATTLE_STYLE] = {
+            .Y = 13,
+            .Xs = {1, 10},
+            .Count = 2
+        },
+        [OPT_CANCEL] = {
+            .Y = 16,
+            .Xs = {1},
+            .Count = 1
+        }
+    };
     
     /*NonGameState*/
     dim_rect RestoreRect = {};
@@ -1035,7 +1074,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
     int64_t Tick = 0;
     int64_t BeginCounter = 0;
     int64_t PerfFreq = GetPerfFreq();
-    int64_t FrameDelta = PerfFreq / 30;
+    int64_t FrameDelta = PerfFreq / 60;
 
     /*LoadWinmm*/
     int IsGranular = 0;
@@ -1176,14 +1215,14 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                             /*GetActiveText*/
                             if(IsShelf) {
                                 ActiveText = "Crammed full of\nPOKéMON books!"; 
+                            } else if(IsTV && World.Player.Dir != DIR_UP) {
+                               ActiveText = "Oops, wrong side."; 
                             } else if(FacingObject) {
                                 ActiveText = FacingObject->Str;
                                 if(FacingObject->Speed == 0) {
                                     FacingObject->Tick = 60;
                                 }
                                 FacingObject->Dir = ReverseDir(World.Player.Dir);
-                            } else if(IsTV && World.Player.Dir != DIR_UP) {
-                               ActiveText = "Oops, wrong side."; 
                             } else {
                                 text *Text = SEARCH_FROM_POS(&CUR(&World.Maps)->Texts, NewPoint);
                                 ActiveText = Text ? Text->Str : "ERROR: NO TEXT";
@@ -1364,21 +1403,31 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                     }
                     break;
                 default:
-                    /*UpdateTextForNextChar*/
-                    switch(ActiveText[0]) {
-                    case '\n':
-                        TextTilePt.X = 1;
-                        TextTilePt.Y += 2;
-                        break;
-                    case '\f':
-                        TextTilePt.X = 1;
-                        TextTilePt.Y = 18;
-                        break;
-                    default:
-                        WindowMap[TextTilePt.Y][TextTilePt.X] = CharToTile(*ActiveText);
-                        TextTilePt.X++;
+                    {
+                        /*UpdateTextForNextChar*/
+                        if(TextTick > 0) {
+                            TextTick--;
+                        } else {
+                            switch(ActiveText[0]) {
+                            case '\n':
+                                TextTilePt.X = 1;
+                                TextTilePt.Y += 2;
+                                break;
+                            case '\f':
+                                TextTilePt.X = 1;
+                                TextTilePt.Y = 18;
+                                break;
+                            default:
+                                WindowMap[TextTilePt.Y][TextTilePt.X] = CharToTile(*ActiveText);
+                                TextTilePt.X++;
+                            }
+                            if(TextTilePt.Y != 18) {
+                                /*UseTextSpeed*/
+                                TextTick = (uint64_t[]){0, 2, 3}[Options[OPT_TEXT_SPEED].I];
+                            }
+                            ActiveText++;
+                        }
                     }
-                    ActiveText++;
                 }
             } else if(Keys['X'] == 1) {
                 GameState = GS_NORMAL;
@@ -1485,8 +1534,11 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                             "BATTLE STYLE\n SHIFT    SET\r"
                             " CANCEL"
                         ); 
-                        WindowMap[OptionSelectI * 2 + 3][1] = MT_FULL_HORZ_ARROW;
-
+                        OptionI = 0;
+                        PlaceOptionCursor(WindowMap, &Options[0], MT_FULL_HORZ_ARROW); 
+                        for(int I = 1; I < _countof(Options); I++) {
+                            PlaceOptionCursor(WindowMap, &Options[I], MT_EMPTY_HORZ_ARROW);
+                        }
                         break;
                     case 5: /*EXIT*/
                         /*RemoveMenu*/
@@ -1498,22 +1550,55 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             }
             break;
         case GS_OPTIONS:
-            if(Keys[VK_RETURN] == 1) {
+            if(Keys[VK_RETURN] == 1 || (Keys['X'] == 1 && OptionI == OPT_CANCEL)) {
                 /*RemoveOptions*/
                 GameState = GS_MENU;
                 memset(WindowMap, 0, sizeof(WindowMap));
                 PlaceMenu(WindowMap, MenuSelectI);
             } else {
-                int OptionPosI[] = {3, 8, 13, 16}; 
                 /*MoveOptionsCursor*/
                 if(Keys[VK_UP] == 1) {
-                    WindowMap[OptionPosI[OptionSelectI]][1] = MT_BLANK;
-                    OptionSelectI = PosIntMod(OptionSelectI - 1, _countof(OptionPosI)); 
-                    WindowMap[OptionPosI[OptionSelectI]][1] = MT_FULL_HORZ_ARROW;
+                    PlaceOptionCursor(WindowMap, &Options[OptionI], MT_EMPTY_HORZ_ARROW);
+                    OptionI = PosIntMod(OptionI - 1, _countof(Options)); 
+                    PlaceOptionCursor(WindowMap, &Options[OptionI], MT_FULL_HORZ_ARROW);
+                } else if(Keys[VK_LEFT] == 1) {
+                    switch(Options[OptionI].Count) {
+                    case 2:
+                        /*SwapOptionSelected*/
+                        PlaceOptionCursor(WindowMap, &Options[OptionI], MT_BLANK);
+                        Options[OptionI].I ^= 1;
+                        PlaceOptionCursor(WindowMap, &Options[OptionI], MT_FULL_HORZ_ARROW);
+                        break;
+                    case 3:
+                        /*NextOptionLeft*/
+                        if(Options[OptionI].I > 0) {
+                            PlaceOptionCursor(WindowMap, &Options[OptionI], MT_BLANK);
+                            Options[OptionI].I--;
+                            PlaceOptionCursor(WindowMap, &Options[OptionI], MT_FULL_HORZ_ARROW);
+                        }
+                        break;
+                    }
                 } else if(Keys[VK_DOWN] == 1) {
-                    WindowMap[OptionPosI[OptionSelectI]][1] = MT_BLANK;
-                    OptionSelectI = PosIntMod(OptionSelectI + 1, _countof(OptionPosI)); 
-                    WindowMap[OptionPosI[OptionSelectI]][1] = MT_FULL_HORZ_ARROW;
+                    PlaceOptionCursor(WindowMap, &Options[OptionI], MT_EMPTY_HORZ_ARROW);
+                    OptionI = PosIntMod(OptionI + 1, _countof(Options)); 
+                    PlaceOptionCursor(WindowMap, &Options[OptionI], MT_FULL_HORZ_ARROW);
+                } else if(Keys[VK_RIGHT] == 1) {
+                    switch(Options[OptionI].Count) {
+                    case 2:
+                        /*SwapOptionSelected*/
+                        PlaceOptionCursor(WindowMap, &Options[OptionI], MT_BLANK);
+                        Options[OptionI].I ^= 1;
+                        PlaceOptionCursor(WindowMap, &Options[OptionI], MT_FULL_HORZ_ARROW);
+                        break;
+                    case 3:
+                        /*NextOptionRight*/
+                        if(Options[OptionI].I < 2) {
+                            PlaceOptionCursor(WindowMap, &Options[OptionI], MT_BLANK);
+                            Options[OptionI].I++;
+                            PlaceOptionCursor(WindowMap, &Options[OptionI], MT_FULL_HORZ_ARROW);
+                        }
+                        break;
+                    }
                 }
             }
             break;
@@ -1524,11 +1609,14 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
         /*UpdatePlayer*/
         sprite *SpriteQuad = &Sprites[SprI];
         point PlayerPt = {72, 72};
-        UpdateAnimation(&World.Player, SpriteQuad, PlayerPt);
         int CanPlayerMove = GameState == GS_NORMAL || 
                             GameState == GS_LEAPING || 
                             GameState == GS_TRANSITION;
+        UpdateAnimation(&World.Player, SpriteQuad, PlayerPt);
         if(CanPlayerMove && World.Player.Tick > 0) {
+            if(World.Player.Tick % 8 == 4) {
+                World.Player.IsRight ^= 1;
+            }
             MoveEntity(&World.Player);
             if(World.Player.IsMoving) {
                 switch(World.Player.Dir) {
@@ -1584,6 +1672,9 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                                 Object->Tick--; 
                             } else {
                                 Object->Dir = Object->StartingDir;
+                            }
+                            if(Object->Tick % 8 == 4) {
+                                Object->IsRight ^= 1;
                             }
                         } else if(Object->Tick > 0) {
                             MoveEntity(Object);
