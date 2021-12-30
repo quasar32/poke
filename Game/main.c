@@ -5,47 +5,6 @@
 #include <time.h>
 #include <windows.h>
 
-/*Generic Structures*/
-#define FC_VEC(Type, Size) struct {\
-    int Count;\
-    Type Data[Size];\
-}
-
-#define SELECT(Type, Size) struct {\
-    int I;\
-    Type Data[Size];\
-}
-
-/*Monad Macros*/
-#define FOR_RANGE(Var, Ptr, BeginI, EndI) \
-    for(typeof(*Ptr) *Var = (Ptr) + (BeginI), *End_ = Var + (EndI); Var < End_; Var++) 
-
-#define FOR_VEC(Var, Vec) FOR_RANGE(Var, (Vec).Data, 0, (Vec).Count)
-
-#define AUTO_VAR(Var, Val) typeof(Val) Var = (Val)
-#define CUR(Select) ({\
-    AUTO_VAR(Select_, (Select));\
-    &Select_->Data[Select_->I];\
-}) 
-#define OTH(Select) ({\
-    AUTO_VAR(Select_, (Select));\
-    &Select_->Data[!Select_->I];\
-}) 
-
-#define SEARCH_FROM_POS(Vec, InPos) ({\
-    AUTO_VAR(Vec_, (Vec));\
-    point Pos_ = (InPos);\
-\
-    typeof((Vec)->Data[0]) *Ret = NULL;\
-    FOR_VEC(E, *Vec_) {\
-        if(EqualPoints(E->Pos, Pos_)) {\
-            Ret = E;\
-            break;\
-        }\
-    }\
-    Ret;\
-})
-
 /*Macro Constants*/
 #define ANIM_PLAYER 0
 #define ANIM_SEAL 128
@@ -59,11 +18,6 @@
 #define SPR_HORZ_FLAG 1
 #define SPR_VERT_FLAG 2
 
-#define DIR_UP 0
-#define DIR_LEFT 1
-#define DIR_DOWN 2
-#define DIR_RIGHT 3
-
 #define QUAD_PROP_SOLID   1
 #define QUAD_PROP_EDGE    2
 #define QUAD_PROP_MESSAGE 4
@@ -76,11 +30,33 @@
 #define TILE_LENGTH 8
 #define TILE_SIZE 64
 
-#define LPARAM_KEY_IS_HELD 0x30000000
-    
-#define MT_FULL_HORZ_ARROW 174
-#define MT_BLANK 176 
-#define MT_EMPTY_HORZ_ARROW 177
+/*Typedefs*/
+typedef uint8_t tile_map[32][32];
+
+/*Enum*/
+typedef enum dir {
+    DIR_UP,
+    DIR_LEFT,
+    DIR_DOWN,
+    DIR_RIGHT
+} dir;
+
+typedef enum menu_tile {
+    MT_FULL_HORZ_ARROW = 174,
+    MT_BLANK = 176,
+    MT_EMPTY_HORZ_ARROW = 177,
+    MT_TIMES = 178
+} menu_tile;
+
+typedef enum game_state {
+    GS_NORMAL,
+    GS_LEAPING,
+    GS_TEXT,
+    GS_TRANSITION,
+    GS_MENU,
+    GS_ITEMS,
+    GS_OPTIONS,
+} game_state; 
 
 /*Structures*/
 typedef struct point {
@@ -132,12 +108,17 @@ typedef struct map {
     int16_t Width;
     int16_t Height;
     int16_t DefaultQuad;
-    int16_t PalleteNum;
+    int16_t PalleteI;
     uint8_t Quads[256][256];
     point Loaded;
-    FC_VEC(text, 256) Texts;
-    FC_VEC(object, 256) Objects;
-    FC_VEC(door, 256) Doors;
+
+    int TextCount;
+    int DoorCount;
+    int ObjectCount;
+
+    text Texts[256];
+    door Doors[256];
+    object Objects[256];
 } map;
 
 typedef struct sprite {
@@ -166,15 +147,19 @@ typedef struct data_path {
 } data_path; 
 
 typedef struct world {
-    SELECT(data_path, 2) DataPaths;
-
-    uint8_t TileData[256 * TILE_SIZE];
+    uint8_t TileData[256][TILE_SIZE];
     uint8_t QuadProps[128];
     uint8_t QuadData[128][4];
 
-    SELECT(map, 2) Maps;
-    object Player;
     const char *MapPaths[WORLD_HEIGHT][WORLD_WIDTH];
+
+    int DataPathI;
+    data_path DataPaths[2];
+
+    int MapI;
+    map Maps[2];
+
+    object Player;
 
     int IsOverworld;
 } world;
@@ -191,6 +176,19 @@ typedef struct option {
     int I;
     int Count;
 } option;
+
+typedef struct item {
+    uint8_t ID;
+    uint8_t Count;
+} item;
+
+typedef struct bag {
+    const char *ItemNames[256];
+    item Items[20];
+    int ItemCount;
+    int ItemSelect;
+    int Y;
+} bag;
 
 /*Global Constants*/
 static const point g_DirPoints[] = {
@@ -337,7 +335,7 @@ static point GetFacingPoint(point Pos, int Dir) {
 }
 
 /*Quad Functions*/
-static void SetToTiles(uint8_t TileMap[32][32], int TileX, int TileY, const uint8_t Set[4]) {
+static void SetToTiles(tile_map TileMap, int TileX, int TileY, const uint8_t Set[4]) {
     TileMap[TileY][TileX] = Set[0];
     TileMap[TileY][TileX + 1] = Set[1];
     TileMap[TileY + 1][TileX] = Set[2];
@@ -355,15 +353,15 @@ static int GetMapDir(const map Maps[static 2], int Map) {
 }
 
 static quad_info GetQuad(const world *World, point Point) {
-    quad_info QuadInfo = {.Map = World->Maps.I, .Point = Point};
+    quad_info QuadInfo = {.Map = World->MapI, .Point = Point};
 
-    int OldWidth = World->Maps.Data[QuadInfo.Map].Width;
-    int OldHeight = World->Maps.Data[QuadInfo.Map].Height;
+    int OldWidth = World->Maps[QuadInfo.Map].Width;
+    int OldHeight = World->Maps[QuadInfo.Map].Height;
 
-    int NewWidth = World->Maps.Data[!QuadInfo.Map].Width;
-    int NewHeight = World->Maps.Data[!QuadInfo.Map].Height;
+    int NewWidth = World->Maps[!QuadInfo.Map].Width;
+    int NewHeight = World->Maps[!QuadInfo.Map].Height;
 
-    switch(GetMapDir(World->Maps.Data, QuadInfo.Map)) {
+    switch(GetMapDir(World->Maps, QuadInfo.Map)) {
     case DIR_UP:
         if(QuadInfo.Point.Y < 0) {
             QuadInfo.Point.X += (NewWidth - OldWidth) / 2;
@@ -379,14 +377,14 @@ static quad_info GetQuad(const world *World, point Point) {
         }
         break;
     case DIR_DOWN:
-        if(QuadInfo.Point.Y >= World->Maps.Data[QuadInfo.Map].Height) {
+        if(QuadInfo.Point.Y >= World->Maps[QuadInfo.Map].Height) {
             QuadInfo.Point.X += (NewWidth - OldWidth) / 2;
             QuadInfo.Point.Y -= OldHeight; 
             QuadInfo.Map ^= 1;
         }
         break;
     case DIR_RIGHT:
-        if(QuadInfo.Point.X >= World->Maps.Data[QuadInfo.Map].Width) {
+        if(QuadInfo.Point.X >= World->Maps[QuadInfo.Map].Width) {
             QuadInfo.Point.X -= OldWidth; 
             QuadInfo.Point.Y += (NewHeight - OldHeight) / 2;
             QuadInfo.Map ^= 1;
@@ -394,18 +392,39 @@ static quad_info GetQuad(const world *World, point Point) {
         break;
     }
 
-    if(PointInMap(&World->Maps.Data[QuadInfo.Map], QuadInfo.Point)) {
-        QuadInfo.Quad = World->Maps.Data[QuadInfo.Map].Quads[QuadInfo.Point.Y][QuadInfo.Point.X];
+    if(PointInMap(&World->Maps[QuadInfo.Map], QuadInfo.Point)) {
+        QuadInfo.Quad = World->Maps[QuadInfo.Map].Quads[QuadInfo.Point.Y][QuadInfo.Point.X];
         QuadInfo.Prop = World->QuadProps[QuadInfo.Quad];
     } else {
-        QuadInfo.Quad = World->Maps.Data[World->Maps.I].DefaultQuad;
+        QuadInfo.Quad = World->Maps[World->MapI].DefaultQuad;
         QuadInfo.Prop = QUAD_PROP_SOLID;
     }
 
     return QuadInfo;
 }
 
-/*Data loaders*/
+/*RunBuffer Functions*/
+static uint8_t RunBufferGetByte(run_buffer *RunBuffer) {
+    uint8_t Result = 0;
+    if(RunBuffer->Index < RunBuffer->Size) {
+        Result = RunBuffer->Data[RunBuffer->Index]; 
+        RunBuffer->Index++;
+    } 
+    return Result;
+}
+
+static void RunBufferGetString(run_buffer *RunBuffer, char Str[256]) {
+    uint8_t Length = RunBufferGetByte(RunBuffer); 
+    int Left = RunBuffer->Size - RunBuffer->Index; 
+    if(Left < Length) {
+        Length = Left;
+    }
+    memcpy(Str, &RunBuffer->Data[RunBuffer->Index], Length);
+    Str[Length] = '\0';
+    RunBuffer->Index += Length;
+}
+
+/*Data Loader*/
 static int ReadAll(const char *Path, void *Bytes, int ToRead) {
     int Result = 0;
     HANDLE FileHandle = CreateFile(
@@ -427,51 +446,26 @@ static int ReadAll(const char *Path, void *Bytes, int ToRead) {
     return Result;
 }
 
-static void ReadTileData(const char *Path, uint8_t *TileData, int TileCount) {
-    const int SizeOfCompressedTile = 16;
-    int SizeOfCompressedTileData = TileCount * SizeOfCompressedTile;
-    int SizeofTileData = TileCount;
+static void ReadTileData(const char *Path, uint8_t TileData[][TILE_SIZE], int TileCount) {
+    uint8_t CompData[256][16] = {0};
+    ReadAll(Path, CompData, TileCount * 16);
 
-    uint8_t CompData[SizeOfCompressedTileData];
-    int BytesRead = ReadAll(Path, CompData, sizeof(CompData));
-
-    for(int I = 0; I < BytesRead; I++) {
-        TileData[I * 4] = (CompData[I] >> 6) & 3;
-        TileData[I * 4 + 1] = (CompData[I] >> 4) & 3;
-        TileData[I * 4 + 2] = (CompData[I] >> 2) & 3;
-        TileData[I * 4 + 3] = CompData[I] & 3;
+    for(int TileI = 0; TileI < TileCount; TileI++) {
+        for(int I = 0; I < 16; I++) {
+            TileData[TileI][I * 4] = (CompData[TileI][I] >> 6) & 3;
+            TileData[TileI][I * 4 + 1] = (CompData[TileI][I] >> 4) & 3;
+            TileData[TileI][I * 4 + 2] = (CompData[TileI][I] >> 2) & 3;
+            TileData[TileI][I * 4 + 3] = CompData[TileI][I] & 3;
+        }
     }
-    for(int I = BytesRead * 4; I < SizeofTileData; I++) {
-        TileData[I] = 0;
-    } 
-}
-
-static uint8_t RunBufferGetByte(run_buffer *RunBuffer) {
-    uint8_t Result = 0;
-    if(RunBuffer->Index < RunBuffer->Size) {
-        Result = RunBuffer->Data[RunBuffer->Index]; 
-        RunBuffer->Index++;
-    } 
-    return Result;
-}
-
-static void RunBufferGetString(run_buffer *RunBuffer, char Str[256]) {
-    uint8_t Length = RunBufferGetByte(RunBuffer); 
-    int Left = RunBuffer->Size - RunBuffer->Index; 
-    if(Left < Length) {
-        Length = Left;
-    }
-    memcpy(Str, &RunBuffer->Data[RunBuffer->Index], Length);
-    Str[Length] = '\0';
-    RunBuffer->Index += Length;
 }
 
 static void ReadMap(world *World, int MapI, const char *Path) {
-    run_buffer RunBuffer = {};
+    run_buffer RunBuffer = {0};
     RunBuffer.Size = ReadAll(Path, RunBuffer.Data, sizeof(RunBuffer.Data));
 
     /*ReadQuadSize*/
-    map *Map = &World->Maps.Data[MapI];
+    map *Map = &World->Maps[MapI];
     Map->Width = RunBufferGetByte(&RunBuffer) + 1;
     Map->Height = RunBufferGetByte(&RunBuffer) + 1;
     int Size = Map->Width * Map->Height;
@@ -502,49 +496,48 @@ static void ReadMap(world *World, int MapI, const char *Path) {
     Map->DefaultQuad = RunBufferGetByte(&RunBuffer) & 127;
 
     /*ReadText*/
-    Map->Texts.Count = RunBufferGetByte(&RunBuffer);
-    FOR_VEC(Text, Map->Texts) {
-        Text->Pos.X = RunBufferGetByte(&RunBuffer);
-        Text->Pos.Y = RunBufferGetByte(&RunBuffer);
-        RunBufferGetString(&RunBuffer, Text->Str);
+    Map->TextCount = RunBufferGetByte(&RunBuffer);
+    for(int I = 0; I < Map->TextCount; I++) {
+        Map->Texts[I].Pos.X = RunBufferGetByte(&RunBuffer);
+        Map->Texts[I].Pos.Y = RunBufferGetByte(&RunBuffer);
+        RunBufferGetString(&RunBuffer, Map->Texts[I].Str);
     }
 
     /*ReadObjects*/
-    Map->Objects.Count = RunBufferGetByte(&RunBuffer);
-    FOR_VEC(Object, Map->Objects) {
-        Object->Pos.X = RunBufferGetByte(&RunBuffer) * 16;
-        Object->Pos.Y = RunBufferGetByte(&RunBuffer) * 16;
-        Object->StartingDir = RunBufferGetByte(&RunBuffer);
-        Object->Dir = Object->StartingDir;  
-        Object->Speed = RunBufferGetByte(&RunBuffer);
-        Object->Tile = RunBufferGetByte(&RunBuffer) & 0xF0;
-        RunBufferGetString(&RunBuffer, Object->Str);
+    Map->ObjectCount = RunBufferGetByte(&RunBuffer);
+    for(int I = 0; I < Map->ObjectCount; I++) {
+        Map->Objects[I].Pos.X = RunBufferGetByte(&RunBuffer) * 16;
+        Map->Objects[I].Pos.Y = RunBufferGetByte(&RunBuffer) * 16;
+        Map->Objects[I].StartingDir = RunBufferGetByte(&RunBuffer) & 3;
+        Map->Objects[I].Dir = Map->Objects[I].StartingDir;  
+        Map->Objects[I].Speed = RunBufferGetByte(&RunBuffer) % 3;
+        Map->Objects[I].Tile = RunBufferGetByte(&RunBuffer) & 0xF0;
+        RunBufferGetString(&RunBuffer, Map->Objects[I].Str);
     }
 
     /*ReadDoors*/
-    Map->Doors.Count = RunBufferGetByte(&RunBuffer);
-    FOR_VEC(Door, Map->Doors) {
-        Door->Pos.X = RunBufferGetByte(&RunBuffer);
-        Door->Pos.Y = RunBufferGetByte(&RunBuffer);
-        Door->DstPos.X = RunBufferGetByte(&RunBuffer);
-        Door->DstPos.Y = RunBufferGetByte(&RunBuffer);
-        RunBufferGetString(&RunBuffer, Door->Path);
+    Map->DoorCount = RunBufferGetByte(&RunBuffer);
+    for(int I = 0; I < Map->DoorCount; I++) {
+        Map->Doors[I].Pos.X = RunBufferGetByte(&RunBuffer);
+        Map->Doors[I].Pos.Y = RunBufferGetByte(&RunBuffer);
+        Map->Doors[I].DstPos.X = RunBufferGetByte(&RunBuffer);
+        Map->Doors[I].DstPos.Y = RunBufferGetByte(&RunBuffer);
+        RunBufferGetString(&RunBuffer, Map->Doors[I].Path);
     }
 
     /*ReadTileSet*/
-    int NewDataPath = RunBufferGetByte(&RunBuffer) % _countof(World->DataPaths.Data); 
-    if(World->DataPaths.I != NewDataPath) {
-        World->DataPaths.I = NewDataPath;
-        data_path *DataPath = CUR(&World->DataPaths);
+    int NewDataPathI = RunBufferGetByte(&RunBuffer) % _countof(World->DataPaths); 
+    if(World->DataPathI != NewDataPathI) {
+        World->DataPathI = NewDataPathI;
 
-        ReadTileData(DataPath->Tile, World->TileData, 96);
-        ReadAll(DataPath->Quad, World->QuadData, sizeof(World->QuadData)); 
-        ReadAll(DataPath->Prop, World->QuadProps, sizeof(World->QuadProps));
+        ReadTileData(World->DataPaths[NewDataPathI].Tile, World->TileData, 96);
+        ReadAll(World->DataPaths[NewDataPathI].Quad, World->QuadData, sizeof(World->QuadData)); 
+        ReadAll(World->DataPaths[NewDataPathI].Prop, World->QuadProps, sizeof(World->QuadProps));
     }
 
-    /*ReadPalleteNum*/
-    Map->PalleteNum = RunBufferGetByte(&RunBuffer);
-    Map->PalleteNum = 1;
+    /*ReadPalleteI*/
+    Map->PalleteI = RunBufferGetByte(&RunBuffer);
+    Map->PalleteI = 1;
 }
 
 static void ReadOverworldMap(world *World, int MapI, point Load) {  
@@ -552,7 +545,7 @@ static void ReadOverworldMap(world *World, int MapI, point Load) {
         const char *CurMapPath = World->MapPaths[Load.Y][Load.X];
         ReadMap(World, MapI, CurMapPath);
         World->IsOverworld = 1;
-        World->Maps.Data[MapI].Loaded = Load; 
+        World->Maps[MapI].Loaded = Load; 
     }
 }
 
@@ -560,7 +553,7 @@ static int GetLoadedPoint(world *World, int MapI, const char *MapPath) {
     for(int Y = 0; Y < WORLD_HEIGHT; Y++) {
         for(int X = 0; X < WORLD_WIDTH; X++) {
             if(World->MapPaths[Y][X] && strcmp(World->MapPaths[Y][X], MapPath) == 0) {
-                World->Maps.Data[MapI].Loaded = (point) {X, Y};
+                World->Maps[MapI].Loaded = (point) {X, Y};
                 return 1;
             } 
         }
@@ -570,7 +563,7 @@ static int GetLoadedPoint(world *World, int MapI, const char *MapPath) {
 
 /*Object Functions*/
 static void MoveEntity(object *Object) {
-    if(Object->IsMoving) {
+    if(Object->IsMoving && Object->Tick % 2 == 0) {
         point DeltaPoint = g_DirPoints[Object->Dir];
         DeltaPoint = MulPoint(DeltaPoint, Object->Speed);
         Object->Pos = AddPoints(Object->Pos, DeltaPoint);
@@ -579,7 +572,7 @@ static void MoveEntity(object *Object) {
 }
 
 static void RandomMove(const world *World, int MapI, object *Object) {
-    const map *Map = &World->Maps.Data[MapI];
+    const map *Map = &World->Maps[MapI];
     int Seed = rand();
     if(Seed % 64 == 0) {
         Object->Dir = Seed / 64 % 4;
@@ -609,7 +602,7 @@ static void RandomMove(const world *World, int MapI, object *Object) {
 
         /*StartMovingEntity*/
         if(!(Prop & QUAD_PROP_SOLID)) {
-            Object->Tick = 16;
+            Object->Tick = 32;
             Object->IsMoving = 1;
         }
     }
@@ -618,7 +611,7 @@ static void RandomMove(const world *World, int MapI, object *Object) {
 static void UpdateAnimation(object *Object, sprite *SpriteQuad, point QuadPt) {
     uint8_t QuadX = QuadPt.X;
     uint8_t QuadY = QuadPt.Y;
-    if(Object->Tick % 8 < 4 || Object->Speed == 0) {
+    if(Object->Tick % 16 < 8 || Object->Speed == 0) {
         /*SetStillAnimation*/
         switch(Object->Dir) {
         case DIR_UP:
@@ -647,7 +640,7 @@ static void UpdateAnimation(object *Object, sprite *SpriteQuad, point QuadPt) {
             break;
         }
     } else {
-        /*ChangeFootAnimation*/
+        /*StepAnimation*/
         switch(Object->Dir) {
         case DIR_UP:
             SpriteQuad[0] = (sprite) {0, 1, 0, 0};
@@ -701,11 +694,11 @@ static int ObjectInUpdateBounds(point QuadPt) {
 /*World Functions*/
 static int LoadAdjacentMap(world *World, int DeltaX, int DeltaY) {
     int Result = 0;
-    point CurMapPt = CUR(&World->Maps)->Loaded;
+    point CurMapPt = World->Maps[World->MapI].Loaded;
     if(DeltaX || DeltaY) {
         point NewMapPt = {CurMapPt.X + DeltaX, CurMapPt.Y + DeltaY}; 
         if(PointInWorld(NewMapPt) && World->MapPaths[NewMapPt.X][NewMapPt.Y]) {
-            ReadOverworldMap(World, !World->Maps.I, NewMapPt);
+            ReadOverworldMap(World, !World->MapI, NewMapPt);
             Result = 1;
         }
     }
@@ -718,7 +711,7 @@ static void LoadNextMap(world *World, int DeltaX, int DeltaY) {
     }
 }
 
-static void PlaceMap(const world *World, uint8_t TileMap[32][32], point TileMin, rect QuadRect) {
+static void PlaceMap(const world *World, tile_map TileMap, point TileMin, rect QuadRect) {
     int TileY = CorrectTileCoord(TileMin.Y);
     for(int QuadY = QuadRect.Top; QuadY < QuadRect.Bottom; QuadY++) {
         int TileX = CorrectTileCoord(TileMin.X);
@@ -731,19 +724,19 @@ static void PlaceMap(const world *World, uint8_t TileMap[32][32], point TileMin,
     }
 }
 
-static void PlaceViewMap(const world *World, uint8_t TileMap[32][32], int IsDown) {
+static void PlaceViewMap(const world *World, tile_map TileMap, int IsDown) {
     rect QuadRect = {
         .Left = World->Player.Pos.X / 16 - 4,
         .Top = World->Player.Pos.Y / 16 - 4,
         .Right = QuadRect.Left + 10,
         .Bottom = QuadRect.Top + 9 + !!IsDown
     };
-    point TileMin = {};
+    point TileMin = {0};
     PlaceMap(World, TileMap, TileMin, QuadRect);
 }
 
 /*Tile Functions*/
-static void PlaceTextBox(uint8_t TileMap[32][32], rect Rect) {
+static void PlaceTextBox(tile_map TileMap, rect Rect) {
     /*HeadRow*/
     TileMap[Rect.Top][Rect.Left] = 96;
     memset(&TileMap[Rect.Top][Rect.Left + 1], 97, Rect.Right - Rect.Left + 2);
@@ -764,7 +757,9 @@ static void PlaceTextBox(uint8_t TileMap[32][32], rect Rect) {
 
 static int CharToTile(int Char) {
     int Output = Char;
-    if(Output == '.') {
+    if(Output == '*') {
+        Output = MT_TIMES;
+    } else if(Output == '.') {
         Output = 175;
     } else if(Output >= '0' && Output <= ':') {
         Output += 103 - '0';
@@ -774,7 +769,7 @@ static int CharToTile(int Char) {
         Output += 140 - 'a';
     } else if(Output == '!') {
         Output = 168;
-    } else if(Output == '\xE9') {
+    } else if(Output == 'é') {
         Output = 166;
     } else if(Output == '\'') {
         Output = 169;
@@ -790,7 +785,7 @@ static int CharToTile(int Char) {
     return Output;
 }
 
-static void PlaceText(uint8_t TileMap[32][32], point TileMin, const char *Text) {
+static void PlaceText(tile_map TileMap, point TileMin, const char *Text) {
     int X = TileMin.X;
     int Y = TileMin.Y;
     for(int I = 0; Text[I] != '\0'; I++) {
@@ -810,18 +805,47 @@ static void PlaceText(uint8_t TileMap[32][32], point TileMin, const char *Text) 
     }
 }
 
-static void PlaceMenu(uint8_t WindowMap[32][32], int MenuSelectI) {
-    PlaceTextBox(WindowMap, (rect) {10, 0, 20, 14}); 
+static void PlaceTextF(tile_map TileMap, point TileMin, const char *Format, ...) {
+    char Text[256];
+    va_list Args;
+    va_start(Args, Format);
+    vsnprintf(Text, sizeof(Text), Format, Args);
+    va_end(Args);
+    PlaceText(TileMap, TileMin, Text);
+}
+
+static void PlaceMenu(tile_map TileMap, int MenuSelectI) {
+    PlaceTextBox(TileMap, (rect) {10, 0, 20, 14}); 
     PlaceText(
-        WindowMap, 
+        TileMap, 
         (point) {12, 2}, 
         "POKéMON\nITEM\nRED\nSAVE\nOPTION\nEXIT" 
     ); 
-    WindowMap[MenuSelectI * 2 + 2][11] = MT_FULL_HORZ_ARROW;
+    TileMap[MenuSelectI * 2 + 2][11] = MT_FULL_HORZ_ARROW;
 }
 
-static void PlaceOptionCursor(uint8_t WindowMap[32][32], option *Option, int Tile) {
-    WindowMap[Option->Y][Option->Xs[Option->I]] = Tile;
+static void PlaceOptionCursor(tile_map TileMap, const option *Option, int Tile) {
+    TileMap[Option->Y][Option->Xs[Option->I]] = Tile;
+}
+
+static void PlaceBag(tile_map TileMap, const bag *Bag) {
+    PlaceTextBox(TileMap, (rect) {4, 2, 20, 13});
+    int MinItem = Bag->ItemSelect - Bag->Y;
+    for(int I = 0; I < 4; I++) {
+        int ItemI = MinItem + I;
+        int Y = I * 2 + 4;
+
+        /*PlaceItem*/
+        if(ItemI < Bag->ItemCount) {
+            PlaceText(TileMap, (point) {6, Y}, Bag->ItemNames[Bag->Items[ItemI].ID]);
+            PlaceTextF(TileMap, (point) {14, Y + 1}, "*%2d", Bag->Items[ItemI].Count);
+        } else if(ItemI == Bag->ItemCount) {
+            PlaceText(TileMap, (point) {6, Y}, "CANCEL");
+        }
+    }
+    
+    /*PlaceBagCursor*/
+    TileMap[Bag->Y * 2 + 4][5] = MT_FULL_HORZ_ARROW;
 }
 
 /*Win32 Functions*/
@@ -879,7 +903,7 @@ static LRESULT CALLBACK WndProc(HWND Window, UINT Message, WPARAM WParam, LPARAM
 
 int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdShow) {
     srand(time(NULL));
-    uint8_t Keys[256] = {};
+    int Keys[256] = {0};
 
     /*InitPalletes*/
     const RGBQUAD Palletes[256][4] = {
@@ -959,71 +983,61 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
 
     /*InitWorld*/
     world World = {
-        .Player = {
-            .Pos = {80, 96},
-            .Dir = DIR_DOWN,
-            .Speed = 2,
-            .Tile = 0,
-        },
         .MapPaths = {
             {"VirdianCity"},
             {"Route1"},
             {"PalleteTown"},
             {"Route21"}
         },
+        .DataPathI = -1,
         .DataPaths = {
-            .I = -1,
-            .Data = {
-                {
-                    .Tile = "TileData00",
-                    .Quad = "QuadData00",
-                    .Prop = "QuadProps00"
-                }, 
-                {
-                    .Tile = "TileData01",
-                    .Quad = "QuadData01",
-                    .Prop = "QuadProps01",
-                }
-            },
+            {
+                .Tile = "TileData00",
+                .Quad = "QuadData00",
+                .Prop = "QuadProps00"
+            }, 
+            {
+                .Tile = "TileData01",
+                .Quad = "QuadData01",
+                .Prop = "QuadProps01"
+            }
+        },
+        .Player = {
+            .Pos = {80, 96},
+            .Dir = DIR_DOWN,
+            .Speed = 2,
+            .Tile = ANIM_PLAYER
         }
     };
 
     /*LoadTileData*/
-    uint8_t SpriteData[256 * TILE_SIZE];
-    uint8_t FlowerData[3 * TILE_SIZE];
-    uint8_t WaterData[7 * TILE_SIZE];
+    uint8_t SpriteData[256][TILE_SIZE];
+    uint8_t FlowerData[3][TILE_SIZE];
+    uint8_t WaterData[7][TILE_SIZE];
 
-    ReadTileData("Menu", &World.TileData[TILE_SIZE * 96], 152);
+    ReadTileData("Menu", &World.TileData[96], 152);
     ReadTileData("SpriteData", SpriteData, 256);
     ReadTileData("FlowerData", FlowerData, 3);
     ReadTileData("WaterData", WaterData, 7);
-    ReadTileData("ShadowData", &SpriteData[TILE_SIZE * 255], 1);
+    ReadTileData("ShadowData", &SpriteData[255], 1);
 
     /*InitMaps*/
     ReadOverworldMap(&World, 0, (point) {0, 2});
 
     /*GameBoyGraphics*/
-    sprite Sprites[40] = {};
+    sprite Sprites[40] = {0};
 
-    uint8_t TileMap[32][32];
+    tile_map TileMap;
     uint8_t ScrollX = 0;
     uint8_t ScrollY = 0;
     PlaceViewMap(&World, TileMap, 0);
 
-    uint8_t WindowMap[32][32] = {};
+    tile_map WindowMap = {0};
 
     /*InitGameState*/
-    typedef enum game_state {
-        GS_NORMAL,
-        GS_LEAPING,
-        GS_TEXT,
-        GS_TRANSITION,
-        GS_MENU,
-        GS_OPTIONS,
-    } game_state; 
     game_state GameState = GS_NORMAL;
     int TransitionTick = 0;
-    point DoorPoint = {};
+    point DoorPoint = {0};
 
     /*InitMenuData*/
     int IsPauseAttempt = 0;
@@ -1059,9 +1073,12 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             .Count = 1
         }
     };
+
+    /*InitBag*/
+    bag Bag = {0};
     
-    /*NonGameState*/
-    dim_rect RestoreRect = {};
+    /*InitNonGameState*/
+    dim_rect RestoreRect = {0};
     int HasQuit = 0;
     int IsFullscreen = 0;
 
@@ -1118,7 +1135,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             for(int I = 0; I < _countof(Keys); I++) {
                 if(!GetAsyncKeyState(I)) {
                     Keys[I] = 0;
-                } else if(Keys[I] < 255) {
+                } else if(Keys[I] < INT_MAX) {
                     Keys[I]++;
                 }
             }
@@ -1141,13 +1158,14 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
         switch(GameState) {
         case GS_NORMAL:
         case GS_LEAPING:
-            if((IsPauseAttempt |= (Keys[VK_RETURN] == 1)) && World.Player.Tick == 0) {
-                IsPauseAttempt = 0;
-                GameState = GS_MENU;
-                PlaceMenu(WindowMap, MenuSelectI);
-            } else {
-                /*PlayerUpdate*/
-                if(World.Player.Tick == 0) {
+            /*PlayerUpdate*/
+            IsPauseAttempt |= (Keys[VK_RETURN] == 1);
+            if(World.Player.Tick == 0) {
+                if(IsPauseAttempt) {
+                    IsPauseAttempt = 0;
+                    GameState = GS_MENU;
+                    PlaceMenu(WindowMap, MenuSelectI);
+                } else { 
                     int AttemptLeap = 0;
 
                     /*PlayerKeyboard*/
@@ -1172,7 +1190,8 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                     quad_info NewQuadInfo = GetQuad(&World, NewPoint);
                     NewPoint = NewQuadInfo.Point;
 
-                    point StartPos = AddPoints(NewPoint, g_DirPoints[ReverseDir(World.Player.Dir)]); 
+                    point ReverseDirPoint = g_DirPoints[ReverseDir(World.Player.Dir)];
+                    point StartPos = AddPoints(NewPoint, ReverseDirPoint); 
                     StartPos.X *= 16;
                     StartPos.Y *= 16;
 
@@ -1184,12 +1203,14 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                     }
 
                     object *FacingObject = NULL; 
-                    FOR_VEC(Object, CUR(&World.Maps)->Objects) {
+                    for(int ObjI = 0; ObjI < World.Maps[World.MapI].ObjectCount; ObjI++) {
+                        object *Object = &World.Maps[World.MapI].Objects[ObjI];
                         point ObjOldPt = PtToQuadPt(Object->Pos);
                         if(Object->Tick > 0) {
                             point ObjDirPt = g_NextPoints[Object->Dir];
                             point ObjNewPt = AddPoints(ObjOldPt, ObjDirPt);
-                            if(EqualPoints(TestPoint, ObjOldPt) || EqualPoints(TestPoint, ObjNewPt)) {
+                            if(EqualPoints(TestPoint, ObjOldPt) || 
+                               EqualPoints(TestPoint, ObjNewPt)) {
                                 NewQuadInfo.Prop = QUAD_PROP_SOLID;
                                 FacingObject = Object;
                                 break;
@@ -1207,7 +1228,8 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                     /*PlayerTestProp*/
                     if(Keys['X'] == 1) {
                         int IsTV = NewQuadInfo.Prop & QUAD_PROP_TV;
-                        int IsShelf = NewQuadInfo.Prop & QUAD_PROP_SHELF && World.Player.Dir == DIR_UP;
+                        int IsShelf = NewQuadInfo.Prop & QUAD_PROP_SHELF && 
+                                      World.Player.Dir == DIR_UP;
                         if(NewQuadInfo.Prop & QUAD_PROP_MESSAGE || IsTV || IsShelf) {
                             GameState = GS_TEXT;
                             PlaceTextBox(WindowMap, (rect) {0, 12, 20, 18});
@@ -1220,16 +1242,22 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                             } else if(FacingObject) {
                                 ActiveText = FacingObject->Str;
                                 if(FacingObject->Speed == 0) {
-                                    FacingObject->Tick = 60;
+                                    FacingObject->Tick = 120;
                                 }
                                 FacingObject->Dir = ReverseDir(World.Player.Dir);
                             } else {
-                                text *Text = SEARCH_FROM_POS(&CUR(&World.Maps)->Texts, NewPoint);
-                                ActiveText = Text ? Text->Str : "ERROR: NO TEXT";
+                                ActiveText = "ERROR: NO TEXT";
+                                for(int I = 0; I < World.Maps[World.MapI].TextCount; I++) {
+                                    text *Text = &(World.Maps[World.MapI].Texts[I]);
+                                    if(EqualPoints(Text->Pos, NewPoint)) {
+                                       ActiveText = Text->Str; 
+                                       break;
+                                    } 
+                                } 
                             }
 
                             TextTilePt = (point) {1, 14};
-                            TextTick = 0;
+                            TextTick = 16;
 
                             HasMoveKey = 0;
                         } else if(NewQuadInfo.Prop & QUAD_PROP_WATER) {
@@ -1244,7 +1272,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                         }
                     }
 
-                    if(World.Player.Tile != 0) {
+                    if(World.Player.Tile == ANIM_SEAL) {
                         if(NewQuadInfo.Prop & QUAD_PROP_WATER) {
                             NewQuadInfo.Prop &= ~QUAD_PROP_SOLID;
                         } else {
@@ -1259,26 +1287,27 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                         /*MovePlayer*/
                         if(NewQuadInfo.Prop & QUAD_PROP_DOOR) {
                             World.Player.IsMoving = 1;
-                            World.Player.Tick = 8; 
+                            World.Player.Tick = 16; 
                             DoorPoint = NewQuadInfo.Point;
                             GameState = GS_TRANSITION;
                             NewPoint.Y--;
-                        } else if(World.Player.Dir == DIR_DOWN && NewQuadInfo.Prop & QUAD_PROP_EDGE) {
+                        } else if(World.Player.Dir == DIR_DOWN && 
+                                  NewQuadInfo.Prop & QUAD_PROP_EDGE) {
                             World.Player.IsMoving = 1;
-                            World.Player.Tick = 16;
+                            World.Player.Tick = 32;
                             GameState = GS_LEAPING;
                         } else if(NewQuadInfo.Prop & QUAD_PROP_SOLID) {
                             World.Player.IsMoving = 0;
-                            World.Player.Tick = 8;
+                            World.Player.Tick = 16;
                             if(World.Player.Dir == DIR_DOWN && OldQuadInfo.Prop & QUAD_PROP_EXIT) {
                                 World.Player.IsMoving = 0;
-                                TransitionTick = 16;
+                                TransitionTick = 32;
                                 DoorPoint = OldQuadInfo.Point;
                                 GameState = GS_TRANSITION;
                             }
                         } else {
                             World.Player.IsMoving = 1;
-                            World.Player.Tick = 8;
+                            World.Player.Tick = 16;
                         }
                     } else {
                         World.Player.IsMoving = 0;
@@ -1286,7 +1315,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
 
                     if(World.Player.IsMoving) {
                         World.Player.Pos = StartPos;
-                        World.Maps.I = NewQuadInfo.Map;
+                        World.MapI = NewQuadInfo.Map;
 
                         /*UpdateLoadedMaps*/
                         if(World.IsOverworld) {
@@ -1294,12 +1323,12 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                             int AddToY = 0;
                             if(NewPoint.X == 4) {
                                 AddToX = -1;
-                            } else if(NewPoint.X == CUR(&World.Maps)->Width - 4) {
+                            } else if(NewPoint.X == World.Maps[World.MapI].Width - 4) {
                                 AddToX = 1;
                             }
                             if(NewPoint.Y == 4) {
                                 AddToY = -1;
-                            } else if(NewPoint.Y == CUR(&World.Maps)->Height - 4) {
+                            } else if(NewPoint.Y == World.Maps[World.MapI].Height - 4) {
                                 AddToY = 1;
                             }
 
@@ -1309,8 +1338,8 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                         }
 
                         /*TranslateQuadRectToTiles*/
-                        point TileMin = {};
-                        rect QuadRect = {};
+                        point TileMin = {0};
+                        rect QuadRect = {0};
 
                         switch(World.Player.Dir) {
                         case DIR_UP:
@@ -1388,7 +1417,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                     break;
                 case 18:
                     /*MoreTextWait*/
-                    WindowMap[16][18] = TextTick / 16 % 2 ? MT_BLANK : 171;
+                    WindowMap[16][18] = TextTick / 30 % 2 ? MT_BLANK : 171;
                     if(Keys['X'] == 1) {
                         if(ActiveText[-1] == '\n') {
                             memcpy(&WindowMap[13][1], &WindowMap[14][1], 17);
@@ -1397,36 +1426,36 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                         memset(&WindowMap[14][1], MT_BLANK, 17);
                         memset(&WindowMap[16][1], MT_BLANK, 18);
                         TextTilePt.Y = 17;
-                        TextTick = 4;
+                        TextTick = 8;
                     } else {
                         TextTick++;
                     }
                     break;
                 default:
-                    {
-                        /*UpdateTextForNextChar*/
-                        if(TextTick > 0) {
-                            TextTick--;
-                        } else {
-                            switch(ActiveText[0]) {
-                            case '\n':
-                                TextTilePt.X = 1;
-                                TextTilePt.Y += 2;
-                                break;
-                            case '\f':
-                                TextTilePt.X = 1;
-                                TextTilePt.Y = 18;
-                                break;
-                            default:
-                                WindowMap[TextTilePt.Y][TextTilePt.X] = CharToTile(*ActiveText);
-                                TextTilePt.X++;
-                            }
-                            if(TextTilePt.Y != 18) {
-                                /*UseTextSpeed*/
+                    /*UpdateTextForNextChar*/
+                    if(TextTick > 0) {
+                        TextTick--;
+                    } else {
+                        switch(ActiveText[0]) {
+                        case '\n':
+                            TextTilePt.X = 1;
+                            TextTilePt.Y += 2;
+                            break;
+                        case '\f':
+                            TextTilePt.X = 1;
+                            TextTilePt.Y = 18;
+                            break;
+                        default:
+                            WindowMap[TextTilePt.Y][TextTilePt.X] = CharToTile(*ActiveText);
+                            TextTilePt.X++;
+                        }
+                        if(TextTilePt.Y != 18) {
+                            /*UseTextSpeed*/
+                            if(!Keys['X']) {
                                 TextTick = (uint64_t[]){0, 2, 3}[Options[OPT_TEXT_SPEED].I];
                             }
-                            ActiveText++;
                         }
+                        ActiveText++;
                     }
                 }
             } else if(Keys['X'] == 1) {
@@ -1439,7 +1468,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             if(World.Player.IsMoving) {
                 if(World.Player.Tick <= 0) {
                     World.Player.IsMoving = 0;
-                    TransitionTick = 16;
+                    TransitionTick = 32;
                 }
             }
 
@@ -1447,27 +1476,34 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             if(!World.Player.IsMoving) {
                 if(TransitionTick-- > 0) {
                     switch(TransitionTick) {
-                    case 12:
-                        g_BmInfo->bmiColors[0] = Palletes[CUR(&World.Maps)->PalleteNum][1]; 
-                        g_BmInfo->bmiColors[1] = Palletes[CUR(&World.Maps)->PalleteNum][2]; 
-                        g_BmInfo->bmiColors[2] = Palletes[CUR(&World.Maps)->PalleteNum][3]; 
+                    case 24:
+                        g_BmInfo->bmiColors[0] = Palletes[World.Maps[World.MapI].PalleteI][1]; 
+                        g_BmInfo->bmiColors[1] = Palletes[World.Maps[World.MapI].PalleteI][2]; 
+                        g_BmInfo->bmiColors[2] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
+                        break;
+                    case 16:
+                        g_BmInfo->bmiColors[0] = Palletes[World.Maps[World.MapI].PalleteI][2]; 
+                        g_BmInfo->bmiColors[1] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
                         break;
                     case 8:
-                        g_BmInfo->bmiColors[0] = Palletes[CUR(&World.Maps)->PalleteNum][2]; 
-                        g_BmInfo->bmiColors[1] = Palletes[CUR(&World.Maps)->PalleteNum][3]; 
-                        break;
-                    case 4:
-                        g_BmInfo->bmiColors[0] = Palletes[CUR(&World.Maps)->PalleteNum][3]; 
+                        g_BmInfo->bmiColors[0] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
                         break;
                     case 0:
                         {
                             /*LoadDoorMap*/
                             quad_info QuadInfo = GetQuad(&World, DoorPoint); 
 
-                            map *OldMap = &World.Maps.Data[QuadInfo.Map]; 
-                            map *NewMap = &World.Maps.Data[!QuadInfo.Map]; 
+                            map *OldMap = &World.Maps[QuadInfo.Map]; 
+                            map *NewMap = &World.Maps[!QuadInfo.Map]; 
 
-                            door *Door = SEARCH_FROM_POS(&OldMap->Doors, QuadInfo.Point);
+                            door *Door = NULL;
+                            for(int I = 0; I < OldMap->DoorCount; I++) {
+                                if(EqualPoints(OldMap->Doors[I].Pos, QuadInfo.Point)) {
+                                    Door = &OldMap->Doors[I];
+                                    break;
+                                } 
+                            }
+
                             if(Door) {
                                 const char *NewPath = Door->Path;
                                 ReadMap(&World, !QuadInfo.Map, NewPath);
@@ -1475,9 +1511,9 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                                 if(!PointInMap(NewMap, Door->DstPos)) {
                                     Door->DstPos = (point) {0, 0};
                                 }
-                                World.Maps.I = !QuadInfo.Map;
+                                World.MapI = !QuadInfo.Map;
                                 World.Player.Pos = QuadPtToPt(Door->DstPos);
-                                World.IsOverworld = GetLoadedPoint(&World, !QuadInfo.Map, NewPath); 
+                                World.IsOverworld = GetLoadedPoint(&World, !QuadInfo.Map, NewPath);
 
                                 /*CompleteTransition*/
                                 ScrollX = 0;
@@ -1486,7 +1522,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                                 memset(OldMap, 0, sizeof(*OldMap));
                                 if(World.Player.Dir == DIR_DOWN) {
                                     World.Player.IsMoving = 1;
-                                    World.Player.Tick = 8;
+                                    World.Player.Tick = 16;
                                     PlaceViewMap(&World, TileMap, 1);
                                 } else {
                                     PlaceViewMap(&World, TileMap, 0);
@@ -1501,7 +1537,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             }
             break;
         case GS_MENU:
-            if(Keys[VK_RETURN] == 1) {
+            if(Keys[VK_RETURN] == 1 || Keys['Z'] == 1) {
                 /*RemoveMenu*/
                 GameState = GS_NORMAL;
                 memset(WindowMap, 0, sizeof(WindowMap));
@@ -1520,6 +1556,11 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                 /*SelectMenuOption*/
                 if(Keys['X'] == 1) {
                     switch(MenuSelectI) {
+                    case 1: /*ITEM*/
+                        GameState = GS_ITEMS; 
+                        PlaceBag(WindowMap, &Bag);
+                        TextTick = 0;
+                        break;
                     case 4: /*OPTION*/
                         GameState = GS_OPTIONS;
                         memset(WindowMap, MT_BLANK, sizeof(WindowMap));
@@ -1549,9 +1590,42 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                 }
             }
             break;
+        case GS_ITEMS:
+            if(Keys['Z'] == 1 || (Keys['X'] == 1 && Bag.ItemSelect == Bag.ItemCount)) {
+                /*RemoveSubMenu*/
+                GameState = GS_MENU;
+                memset(WindowMap, 0, sizeof(WindowMap));
+                PlaceMenu(WindowMap, MenuSelectI);
+            } else {
+                /*MoveTextCursor*/
+                if(Keys['X'] == 1) {
+                } else if(Keys[VK_UP] % 10 == 1 && Bag.ItemSelect > 0) {
+                    Bag.ItemSelect--; 
+                    if(Bag.Y > 0) {
+                        Bag.Y--;
+                    }
+                    PlaceBag(WindowMap, &Bag); 
+                } else if(Keys[VK_DOWN] % 10 == 1 && Bag.ItemSelect < Bag.ItemCount) {
+                    Bag.ItemSelect++; 
+                    if(Bag.Y < 2) {
+                        Bag.Y++;
+                    }
+                    PlaceBag(WindowMap, &Bag); 
+                } 
+
+                /*MoreItemsWait*/
+                if(Bag.ItemSelect - Bag.Y + 3 < Bag.ItemCount) {
+                    WindowMap[11][18] = TextTick / 30 % 2 ? MT_BLANK : 171;
+                    TextTick++;
+                } else {
+                    TextTick = 0;
+                }
+            }
+            break;
         case GS_OPTIONS:
-            if(Keys[VK_RETURN] == 1 || (Keys['X'] == 1 && OptionI == OPT_CANCEL)) {
-                /*RemoveOptions*/
+            if(Keys[VK_RETURN] == 1 || Keys['Z'] == 1 ||
+               (Keys['X'] == 1 && OptionI == OPT_CANCEL)) {
+                /*RemoveSubMenu*/
                 GameState = GS_MENU;
                 memset(WindowMap, 0, sizeof(WindowMap));
                 PlaceMenu(WindowMap, MenuSelectI);
@@ -1614,11 +1688,11 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                             GameState == GS_TRANSITION;
         UpdateAnimation(&World.Player, SpriteQuad, PlayerPt);
         if(CanPlayerMove && World.Player.Tick > 0) {
-            if(World.Player.Tick % 8 == 4) {
+            if(World.Player.Tick % 16 == 8) {
                 World.Player.IsRight ^= 1;
             }
             MoveEntity(&World.Player);
-            if(World.Player.IsMoving) {
+            if(World.Player.IsMoving && World.Player.Tick % 2 == 0) {
                 switch(World.Player.Dir) {
                 case DIR_UP:
                     ScrollY -= World.Player.Speed;
@@ -1638,27 +1712,28 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
         SprI += 4;
    
         /*UpdateObjects*/
-        for(int MapI = 0; MapI < _countof(World.Maps.Data); MapI++) {
-            FOR_VEC(Object, World.Maps.Data[MapI].Objects) {
+        for(int MapI = 0; MapI < _countof(World.Maps); MapI++) {
+            for(int ObjI = 0; ObjI < World.Maps[MapI].ObjectCount; ObjI++) {
+                object *Object = &World.Maps[MapI].Objects[ObjI];
                 sprite *SpriteQuad = &Sprites[SprI];
                 point QuadPt = {
                     Object->Pos.X - World.Player.Pos.X + 72,
                     Object->Pos.Y - World.Player.Pos.Y + 72
                 };
 
-                if(World.Maps.I != MapI) {
-                    switch(GetMapDir(World.Maps.Data, World.Maps.I)) {
+                if(World.MapI != MapI) {
+                    switch(GetMapDir(World.Maps, World.MapI)) {
                     case DIR_UP:
-                        QuadPt.Y -= World.Maps.Data[MapI].Height * 16;
+                        QuadPt.Y -= World.Maps[MapI].Height * 16;
                         break;
                     case DIR_LEFT:
-                        QuadPt.X -= World.Maps.Data[MapI].Width * 16;
+                        QuadPt.X -= World.Maps[MapI].Width * 16;
                         break;
                     case DIR_DOWN:
-                        QuadPt.Y += CUR(&World.Maps)->Height * 16;
+                        QuadPt.Y += World.Maps[World.MapI].Height * 16;
                         break;
                     case DIR_RIGHT:
-                        QuadPt.X += CUR(&World.Maps)->Width * 16;
+                        QuadPt.X += World.Maps[World.MapI].Width * 16;
                         break;
                     }
                 }
@@ -1673,7 +1748,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                             } else {
                                 Object->Dir = Object->StartingDir;
                             }
-                            if(Object->Tick % 8 == 4) {
+                            if(Object->Tick % 16 == 8) {
                                 Object->IsRight ^= 1;
                             }
                         } else if(Object->Tick > 0) {
@@ -1691,62 +1766,64 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
         if(GameState == GS_LEAPING) {
             /*PlayerUpdateJumpingAnimation*/
             uint8_t PlayerDeltas[] = {0, 4, 6, 8, 9, 10, 11, 12};
-            uint8_t DeltaI = World.Player.Tick < 8 ? World.Player.Tick: 15 - World.Player.Tick;
-            FOR_RANGE(Tile, Sprites, 0, 4) { 
-                Tile->Y -= PlayerDeltas[DeltaI];
+            uint8_t HalfTick = World.Player.Tick / 2;
+            uint8_t DeltaI = HalfTick < 8 ? HalfTick: 15 - HalfTick;
+            for(int I = 0; I < 4; I++) {
+                Sprites[I].Y -= PlayerDeltas[DeltaI];
             }
 
             /*CreateShadowQuad*/
-            sprite *ShadowQuad  = &Sprites[SprI]; 
-            ShadowQuad[0] = (sprite) {72, 72, 255, 0};
-            ShadowQuad[1] = (sprite) {80, 72, 255, SPR_HORZ_FLAG};
-            ShadowQuad[2] = (sprite) {72, 80, 255, SPR_VERT_FLAG};
-            ShadowQuad[3] = (sprite) {80, 80, 255, SPR_HORZ_FLAG | SPR_VERT_FLAG};
-            SprI += 4;
+            if(HalfTick) {
+                sprite *ShadowQuad  = &Sprites[SprI]; 
+                ShadowQuad[0] = (sprite) {72, 72, 255, 0};
+                ShadowQuad[1] = (sprite) {80, 72, 255, SPR_HORZ_FLAG};
+                ShadowQuad[2] = (sprite) {72, 80, 255, SPR_VERT_FLAG};
+                ShadowQuad[3] = (sprite) {80, 80, 255, SPR_HORZ_FLAG | SPR_VERT_FLAG};
+                SprI += 4;
+            } else {
+                GameState = GS_NORMAL;
+            }
         }
 
         /*MutTileUpdate*/
-        int TickCycle = Tick / 16 % 9;
+        int TickCycle = Tick / 32 % 9;
         if(Tick % 16 == 0 && World.IsOverworld) {
             /*FlowersUpdate*/
-            uint8_t *FlowerDst = World.TileData + 3 * TILE_SIZE;
-            uint8_t *FlowerSrc = FlowerData + TickCycle % 3 * TILE_SIZE;
-            memcpy(FlowerDst, FlowerSrc, TILE_SIZE);
+            memcpy(World.TileData[3], FlowerData[TickCycle % 3], TILE_SIZE);
 
             /*WaterUpdate*/
             int TickMod = TickCycle < 5 ? TickCycle : 9 - TickCycle;
-            uint8_t *WaterDst = World.TileData + 20 * TILE_SIZE;
-            uint8_t *WaterSrc = WaterData + TickMod * TILE_SIZE;
-            memcpy(WaterDst, WaterSrc, TILE_SIZE);
+            memcpy(World.TileData[20], WaterData[TickMod], TILE_SIZE);
         }
 
         /*UpdatePallete*/
         if(GameState != GS_TRANSITION && World.Player.Tick <= 0) {
-            memcpy(g_BmInfo->bmiColors, Palletes[CUR(&World.Maps)->PalleteNum], sizeof(*Palletes));
+            int PalleteI = World.Maps[World.MapI].PalleteI;
+            memcpy(g_BmInfo->bmiColors, Palletes[PalleteI], sizeof(Palletes[PalleteI]));
         }
 
         /*RenderTiles*/
         uint8_t (*BmRow)[BM_WIDTH] = g_BmPixels;
         
         for(int PixelY = 0; PixelY < BM_HEIGHT; PixelY++) {
-            #define GET_TILE_SRC(Off) (World.TileData + (Off) + TileMap[TileY][TileX] * TILE_SIZE)
             int PixelX = 8 - (ScrollX & 7);
             int SrcYDsp = ((PixelY + ScrollY) & 7) << 3;
             int TileX = ScrollX >> 3;
             int TileY = (PixelY + ScrollY) / 8 % 32;
             int StartOff = SrcYDsp | (ScrollX & 7);
-            memcpy(*BmRow, GET_TILE_SRC(StartOff), 8);
+            memcpy(*BmRow, &World.TileData[TileMap[TileY][TileX]][StartOff], 8);
 
             for(int Repeat = 1; Repeat < 20; Repeat++) {
                 TileX = (TileX + 1) % 32;
                 uint8_t *Pixel = *BmRow + PixelX;
-                memcpy(Pixel, GET_TILE_SRC(SrcYDsp), 8);
+                memcpy(Pixel, &World.TileData[TileMap[TileY][TileX]][SrcYDsp], 8);
 
                 PixelX += 8;
             }
             TileX = (TileX + 1) % 32;
             uint8_t *Pixel = *BmRow + PixelX;
-            memcpy(Pixel, GET_TILE_SRC(SrcYDsp), BM_WIDTH - PixelX);
+            int RemainX = BM_WIDTH - PixelX;
+            memcpy(Pixel, &World.TileData[TileMap[TileY][TileX]][SrcYDsp], RemainX);
             BmRow++;
         }
 
@@ -1785,7 +1862,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                 DispY = -8;
             }
 
-            uint8_t *Src = SpriteData + Sprites[I].Tile * TILE_SIZE + SrcY * TILE_LENGTH + SrcX;
+            uint8_t *Src = &SpriteData[Sprites[I].Tile][SrcY * TILE_LENGTH + SrcX];
 
             for(int Y = 0; Y < RowsToRender; Y++) {
                 uint8_t *Tile = Src;
@@ -1809,7 +1886,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
 
             for(int Repeat = 0; Repeat < 20; Repeat++) {
                 if(WindowMap[TileY][TileX]) {
-                    uint8_t *Src = World.TileData + SrcYDsp + WindowMap[TileY][TileX] * TILE_SIZE;
+                    uint8_t *Src = &World.TileData[WindowMap[TileY][TileX]][SrcYDsp];
                     memcpy(*BmRow + PixelX, Src, 8);
                 }
                 TileX++;
