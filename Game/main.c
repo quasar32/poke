@@ -1,9 +1,13 @@
+#define COBJMACROS
+
+/*Includes*/
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <time.h>
 #include <windows.h>
+#include <xaudio2.h>
 
 /*Macro Constants*/
 #define ANIM_PLAYER 0
@@ -32,6 +36,8 @@
 
 /*Typedefs*/
 typedef uint8_t tile_map[32][32];
+typedef HRESULT WINAPI xaudio2_create(IXAudio2** pxaudio2, UINT32 flags, XAUDIO2_PROCESSOR processor);
+typedef MMRESULT WINAPI winmm_func (UINT);
 
 /*Enum*/
 typedef enum dir {
@@ -189,6 +195,11 @@ typedef struct bag {
     int ItemSelect;
     int Y;
 } bag;
+
+typedef struct proc {
+    const char *Name;
+    FARPROC Func;
+} proc;
 
 /*Global Constants*/
 static const point g_DirPoints[] = {
@@ -901,8 +912,24 @@ static LRESULT CALLBACK WndProc(HWND Window, UINT Message, WPARAM WParam, LPARAM
     return DefWindowProc(Window, Message, WParam, LParam);
 }
 
+static HMODULE LoadProcs(const char *LibraryName, proc *Procs, int ProcCount) {
+    HMODULE Library = LoadLibrary(LibraryName);
+    if(Library) {
+        for(int I = 0; I < ProcCount; I++) {
+            Procs[I].Func = GetProcAddress(Library, Procs[I].Name);
+            if(!Procs[I].Func) {
+                FreeLibrary(Library);
+                Library = NULL;
+                break;
+            }
+        }
+    }
+    return Library;
+} 
+
 int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdShow) {
     srand(time(NULL));
+    SetCurrentDirectory("../Shared");
     int Keys[256] = {0};
 
     /*InitPalletes*/
@@ -938,12 +965,6 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
         .biCompression = BI_RGB,
         .biClrUsed = 4
     };
-    
-    /*SetLoadPath*/
-    if(!SetCurrentDirectory("../Shared")) {
-        MessageBox(NULL, "Failed to find shared directory", "Error", MB_ICONERROR); 
-        return 1;
-    }
 
     /*InitWindow*/
     WNDCLASS WindowClass = {
@@ -979,6 +1000,54 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
     if(!Window) {
         MessageBox(NULL, "Failed to register window class", "Error", MB_ICONERROR); 
         return 1;
+    }
+
+    /*InitXAudio2*/
+    int IsXAudio2Valid = 0;
+    IXAudio2 *XAudio2 = NULL;
+    IXAudio2MasteringVoice *MasterVoice = NULL;
+    HMODULE XAudio2Library = NULL;
+
+    HMODULE ComLibrary = LoadProcs("ole32.dll", ComProcs, _countof(ComProcs));
+    if(ComLibrary) {
+        HRESULT HResult = CoInitializeEx(NULL, COINIT_MULTITHREADED);
+        proc XAudio2Proc = {"XAudio2Create"};
+        if((XAudio2Library = LoadProcs("XAudio2_9.dll", &XAudio2Proc, 1)) ||
+           (XAudio2Library = LoadProcs("XAudio2_8.dll", &XAudio2Proc, 1)) ||
+           (XAudio2Library = LoadProcs("XAudio2_7.dll", &XAudio2Proc, 1))) { 
+
+            xaudio2_create *DyXAudio2Create = (xaudio2_create *) XAudio2Proc.Func;
+            if(SUCCEEDED(HResult)) {
+                HResult = DyXAudio2Create(&XAudio2, 0, XAUDIO2_DEFAULT_PROCESSOR);
+                if(SUCCEEDED(HResult)) {
+                    HResult = IXAudio2_CreateMasteringVoice(
+                        XAudio2, 
+                        &MasterVoice,
+                        XAUDIO2_DEFAULT_CHANNELS,
+                        XAUDIO2_DEFAULT_SAMPLERATE,
+                        0,
+                        NULL,
+                        NULL,
+                        AudioCategory_GameEffects
+                    ); 
+                    if(SUCCEEDED(HResult)) { 
+                        IsXAudio2Valid = 1;
+                    }
+                    if(!IsXAudio2Valid) {
+                        IXAudio2_Release(XAudio2);
+                    } 
+                }
+            }
+            if(!IsXAudio2Valid) {
+                FreeLibrary(XAudio2Library);
+            }
+        }
+        if(!IsXAudio2Valid) {
+            CoUninitialize();
+        }
+    }
+    if(!IsXAudio2Valid) {
+        MessageBox(Window, "XAudio2 could not be initalized", "Error", MB_ICONERROR);
     }
 
     /*InitWorld*/
@@ -1095,21 +1164,16 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
 
     /*LoadWinmm*/
     int IsGranular = 0;
-    typedef MMRESULT WINAPI(winmm_func)(UINT);
-    winmm_func *TimeEndPeriod = NULL;
 
-    HMODULE WinmmLib = LoadLibrary("winmm.dll");
+    winmm_func *TimeBeginPeriod = NULL;
+    winmm_func *TimeEndPeriod = NULL;
+    proc WinmmProcs[2] = {{"timeBeginPeriod"}, {"timeEndPeriod"}};
+
+    HMODULE WinmmLib = LoadProcs("winmm.dll", WinmmProcs, _countof(WinmmProcs)); 
     if(WinmmLib) {
-        winmm_func *TimeBeginPeriod = (winmm_func *) GetProcAddress(WinmmLib, "timeBeginPeriod"); 
-        if(TimeBeginPeriod) {
-            TimeEndPeriod = (winmm_func *) GetProcAddress(WinmmLib, "timeEndPeriod"); 
-            if(TimeEndPeriod) {
-                IsGranular = TimeBeginPeriod(1) == TIMERR_NOERROR;
-            }
-        }
-        if(!IsGranular) {
-            FreeLibrary(WinmmLib);
-        }
+        TimeBeginPeriod = (winmm_func *) WinmmProcs[0].Func;
+        TimeEndPeriod = (winmm_func *) WinmmProcs[1].Func; 
+        IsGranular = TimeBeginPeriod(1) == TIMERR_NOERROR;
     }
 
     /*MainLoop*/
@@ -1930,7 +1994,12 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
         UpdateWindow(Window);
         Tick++;
     }
-    if(IsGranular) {
+    if(IsXAudio2Valid) {
+        IXAudio2_Release(XAudio2);
+        CoUninitialize();
+    }
+
+    if(TimeEndPeriod) {
         TimeEndPeriod(1);
     }
 
