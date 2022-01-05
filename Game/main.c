@@ -58,7 +58,8 @@ typedef enum menu_tile {
     MT_FULL_HORZ_ARROW = 174,
     MT_BLANK = 176,
     MT_EMPTY_HORZ_ARROW = 177,
-    MT_TIMES = 178
+    MT_TIMES = 178,
+    MT_QUESTION = 179
 } menu_tile;
 
 typedef enum game_state {
@@ -66,8 +67,11 @@ typedef enum game_state {
     GS_LEAPING,
     GS_TEXT,
     GS_TRANSITION,
-    GS_MENU,
-    GS_ITEMS,
+    GS_START_MENU,
+
+    /*SubMenu*/
+    GS_ITEM,
+    GS_SAVE,
     GS_OPTIONS,
 } game_state; 
 
@@ -207,6 +211,14 @@ typedef struct proc {
     const char *Name;
     FARPROC Func;
 } proc;
+
+typedef struct multi_lib {
+    size_t VersionCount; 
+    const char **Versions;
+
+    size_t ProcCount; 
+    proc *Procs;
+} multi_lib;
     
 typedef struct wave_header {
     DWORD idChunk;
@@ -224,6 +236,32 @@ typedef struct wave_header {
     DWORD cbData;
 } wave_header;
 
+typedef struct com {
+    HMODULE Library;
+    co_initialize_ex *CoInitializeEx; 
+    co_uninitialize *CoUninitialize;
+} com;
+
+typedef struct winmm {
+    HMODULE Library;
+    winmm_func *TimeBeginPeriod;
+    winmm_func *TimeEndPeriod;
+    int IsGranular;
+} winmm;
+
+typedef struct xaudio2 {
+    HMODULE Library;
+    xaudio2_create *Create;
+    IXAudio2 *Engine;
+    IXAudio2MasteringVoice *MasterVoice;
+} xaudio2;
+
+typedef struct active_text {
+    const char *Str;
+    point TilePt;
+    uint64_t Tick;
+} active_text; 
+
 /*Global Constants*/
 static const point g_DirPoints[] = {
     [DIR_UP] = {0, -1},
@@ -239,7 +277,7 @@ static const point g_NextPoints[] = {
     [DIR_RIGHT] = {1, 0}
 };
 
-static const WAVEFORMATEX g_SoundEffectFormat = {
+static const WAVEFORMATEX g_WaveFormat = {
     .wFormatTag = WAVE_FORMAT_PCM, 
     .nChannels = 2,
     .nSamplesPerSec = 48000,
@@ -468,6 +506,19 @@ static void RunBufferGetString(run_buffer *RunBuffer, char Str[256]) {
 }
 
 /*Data Loader*/
+static HRESULT ReadObject(HANDLE FileHandle, void *Object, DWORD ObjectSize) {
+    HRESULT Result = S_OK;
+    DWORD BytesRead;
+    if(ReadFile(FileHandle, Object, ObjectSize, &BytesRead, NULL)) {
+        if(BytesRead != ObjectSize) {
+            Result = E_FAIL;
+        }
+    } else {
+        Result = HRESULT_FROM_WIN32(GetLastError()); 
+    } 
+    return Result;
+}
+
 static int ReadAll(const char *Path, void *Bytes, int ToRead) {
     int Result = 0;
     HANDLE FileHandle = CreateFile(
@@ -553,7 +604,7 @@ static void ReadMap(world *World, int MapI, const char *Path) {
         Map->Objects[I].Pos.Y = RunBufferGetByte(&RunBuffer) * 16;
         Map->Objects[I].StartingDir = RunBufferGetByte(&RunBuffer) & 3;
         Map->Objects[I].Dir = Map->Objects[I].StartingDir;  
-        Map->Objects[I].Speed = RunBufferGetByte(&RunBuffer) % 3;
+        Map->Objects[I].Speed = RunBufferGetByte(&RunBuffer) % 2;
         Map->Objects[I].Tile = RunBufferGetByte(&RunBuffer) & 0xF0;
         RunBufferGetString(&RunBuffer, Map->Objects[I].Str);
     }
@@ -583,8 +634,9 @@ static void ReadMap(world *World, int MapI, const char *Path) {
 }
 
 static void ReadOverworldMap(world *World, int MapI, point Load) {  
-    if(PointInWorld(Load) && World->MapPaths[Load.Y][Load.X]) {
-        const char *CurMapPath = World->MapPaths[Load.Y][Load.X];
+    const char *MapPath = World->MapPaths[Load.Y][Load.X]; 
+    if(PointInWorld(Load) && MapPath) {
+        const char *CurMapPath = MapPath;
         ReadMap(World, MapI, CurMapPath);
         World->IsOverworld = 1;
         World->Maps[MapI].Loaded = Load; 
@@ -613,6 +665,22 @@ static void MoveEntity(object *Object) {
     Object->Tick--;
 }
 
+static int WillObjectCollide(const object *OtherObject, point NewPoint) {
+    int WillCollide = 0;
+    point OtherPoint = PtToQuadPt(OtherObject->Pos);
+
+    if(EqualPoints(NewPoint, OtherPoint)) {
+        WillCollide = 1;
+    } else if(OtherObject->IsMoving) {
+        point NextPoint = g_NextPoints[OtherObject->Dir];
+        point OtherNextPoint = AddPoints(OtherPoint, NextPoint);
+        if(EqualPoints(OtherNextPoint, NewPoint)) {
+            WillCollide = 1;
+        }
+    }
+    return WillCollide;
+}
+
 static void RandomMove(const world *World, int MapI, object *Object) {
     const map *Map = &World->Maps[MapI];
     int Seed = rand();
@@ -629,28 +697,24 @@ static void RandomMove(const world *World, int MapI, object *Object) {
             Prop = World->QuadProps[Quad];
         }
         
-        /*IfWillColideWithPlayer*/
-        point PlayerCurPoint = PtToQuadPt(World->Player.Pos);
-
-        if(EqualPoints(PlayerCurPoint, NewPoint)) {
-            Prop = QUAD_PROP_SOLID;
-        } else if(World->Player.IsMoving) {
-            point NextPoint = g_NextPoints[World->Player.Dir];
-            point PlayerNextPoint = AddPoints(PlayerCurPoint, NextPoint);
-            if(EqualPoints(PlayerNextPoint, NewPoint)) {
-                Prop = QUAD_PROP_SOLID;
+        /*CheckForCollisions*/
+        int WillCollide = WillObjectCollide(&World->Player, NewPoint);
+        for(int I = 0; I < World->Maps[MapI].ObjectCount && !WillCollide; I++) {
+            const object *OtherObject = &World->Maps[MapI].Objects[I]; 
+            if(Object != OtherObject) {
+                WillCollide = WillObjectCollide(OtherObject, NewPoint); 
             }
-        }
+        } 
 
         /*StartMovingEntity*/
-        if(!(Prop & QUAD_PROP_SOLID)) {
+        if(!(Prop & QUAD_PROP_SOLID) && !WillCollide) {
             Object->Tick = 32;
             Object->IsMoving = 1;
         }
     }
 }
 
-static void UpdateAnimation(object *Object, sprite *SpriteQuad, point QuadPt) {
+static void UpdateAnimation(const object *Object, sprite *SpriteQuad, point QuadPt) {
     uint8_t QuadX = QuadPt.X;
     uint8_t QuadY = QuadPt.Y;
     if(Object->Tick % 16 < 8 || Object->Speed == 0) {
@@ -739,7 +803,8 @@ static int LoadAdjacentMap(world *World, int DeltaX, int DeltaY) {
     point CurMapPt = World->Maps[World->MapI].Loaded;
     if(DeltaX || DeltaY) {
         point NewMapPt = {CurMapPt.X + DeltaX, CurMapPt.Y + DeltaY}; 
-        if(PointInWorld(NewMapPt) && World->MapPaths[NewMapPt.X][NewMapPt.Y]) {
+        if(PointInWorld(NewMapPt) && World->MapPaths[NewMapPt.X][NewMapPt.Y] &&
+           !EqualPoints(World->Maps[!World->MapI].Loaded, NewMapPt)) {
             ReadOverworldMap(World, !World->MapI, NewMapPt);
             Result = 1;
         }
@@ -781,19 +846,19 @@ static void PlaceViewMap(const world *World, tile_map TileMap, int IsDown) {
 static void PlaceTextBox(tile_map TileMap, rect Rect) {
     /*HeadRow*/
     TileMap[Rect.Top][Rect.Left] = 96;
-    memset(&TileMap[Rect.Top][Rect.Left + 1], 97, Rect.Right - Rect.Left + 2);
+    memset(&TileMap[Rect.Top][Rect.Left + 1], 97, Rect.Right - Rect.Left - 2);
     TileMap[Rect.Top][Rect.Right - 1] = 98;
 
     /*BodyRows*/
     for(int Y = Rect.Top + 1; Y < Rect.Bottom - 1; Y++) {
         TileMap[Y][Rect.Left] = 99;
-        memset(&TileMap[Y][Rect.Left + 1], MT_BLANK, Rect.Right - Rect.Left + 2);
+        memset(&TileMap[Y][Rect.Left + 1], MT_BLANK, Rect.Right - Rect.Left - 2);
         TileMap[Y][Rect.Right - 1] = 101;
     }
 
     /*FootRow*/
     TileMap[Rect.Bottom - 1][Rect.Left] = 100;
-    memset(&TileMap[Rect.Bottom - 1][Rect.Left + 1], 97, Rect.Right - Rect.Left + 2);
+    memset(&TileMap[Rect.Bottom - 1][Rect.Left + 1], 97, Rect.Right - Rect.Left - 2);
     TileMap[Rect.Bottom - 1][Rect.Right - 1] = 102;
 }
 
@@ -821,6 +886,8 @@ static int CharToTile(int Char) {
         Output = 170;
     } else if(Output == ',') {
         Output = 173; 
+    } else if(Output == '?') {
+       Output = MT_QUESTION; 
     } else {
         Output = MT_BLANK;
     }
@@ -841,7 +908,7 @@ static void PlaceText(tile_map TileMap, point TileMin, const char *Text) {
             Y += 3; 
             break;
         default:
-            TileMap[Y][X] = CharToTile(Text[I]); 
+            TileMap[Y][X] = CharToTile(Text[I]);
             X++;
         }
     }
@@ -857,6 +924,7 @@ static void PlaceTextF(tile_map TileMap, point TileMin, const char *Format, ...)
 }
 
 static void PlaceMenu(tile_map TileMap, int MenuSelectI) {
+    memset(TileMap, 0, sizeof(tile_map));
     PlaceTextBox(TileMap, (rect) {10, 0, 20, 14}); 
     PlaceText(
         TileMap, 
@@ -890,20 +958,138 @@ static void PlaceBag(tile_map TileMap, const bag *Bag) {
     TileMap[Bag->Y * 2 + 4][5] = MT_FULL_HORZ_ARROW;
 }
 
-/*Win32 Functions*/
-static HRESULT ReadObject(HANDLE FileHandle, void *Object, DWORD ObjectSize) {
+static game_state RemoveStartMenu(tile_map TileMap) {
+    memset(TileMap, 0, sizeof(tile_map));
+    return GS_NORMAL; 
+}
+
+/*Library Functions*/
+static HRESULT LoadProc(HMODULE *Library, const char *LibraryName, proc *Procs, int ProcCount) {
     HRESULT Result = S_OK;
-    DWORD BytesRead;
-    if(ReadFile(FileHandle, Object, ObjectSize, &BytesRead, NULL)) {
-        if(BytesRead != ObjectSize) {
-            Result = S_FALSE;
+    *Library = LoadLibrary(LibraryName);
+    if(*Library) {
+        for(int I = 0; I < ProcCount; I++) {
+            Procs[I].Func = GetProcAddress(*Library, Procs[I].Name);
+            if(!Procs[I].Func) {
+                FreeLibrary(*Library);
+                Result = HRESULT_FROM_WIN32(GetLastError());
+                *Library = NULL;
+                break;
+            } 
         }
     } else {
-        Result = HRESULT_FROM_WIN32(GetLastError()); 
-    } 
+        Result = HRESULT_FROM_WIN32(GetLastError());
+    }
+    return Result;
+} 
+
+static HRESULT LoadProcsVersioned(HMODULE *Library, multi_lib *LibData) {
+    HRESULT Result = S_OK;
+    for(int I = 0; I < LibData->VersionCount; I++) {
+        Result = LoadProc(Library, LibData->Versions[I], LibData->Procs, LibData->ProcCount);
+        if(SUCCEEDED(Result)) {
+            break;
+        }
+    }
+    return Result;
+} 
+
+static HRESULT StartWinmm(winmm *Winmm) {
+    proc WinmmProcs[2] = {{"timeBeginPeriod"}, {"timeEndPeriod"}};
+    HRESULT Result = LoadProc(&Winmm->Library, "winmm.dll", WinmmProcs, _countof(WinmmProcs)); 
+    if(SUCCEEDED(Result)) {
+        Winmm->TimeBeginPeriod = (winmm_func *) WinmmProcs[0].Func;
+        Winmm->TimeEndPeriod = (winmm_func *) WinmmProcs[1].Func;
+        Winmm->IsGranular = Winmm->TimeBeginPeriod(1) == TIMERR_NOERROR;
+        if(!Winmm->IsGranular) {
+            Result = E_FAIL; 
+            FreeLibrary(Winmm->Library);
+            *Winmm = (winmm) {0};
+        }
+    }
     return Result;
 }
 
+static void EndWinmm(winmm *Winmm) {
+    if(Winmm->Library) {
+        Winmm->TimeEndPeriod(1);
+        FreeLibrary(Winmm->Library);
+    }
+}
+
+static HRESULT StartCom(com *Com) {
+    proc ComProcs[] = {{"CoInitializeEx"}, {"CoUninitialize"}};
+    HRESULT Result = LoadProc(&Com->Library, "ole32.dll", ComProcs, _countof(ComProcs));
+    if(SUCCEEDED(Result)) {
+        Com->CoInitializeEx = (co_initialize_ex *) ComProcs[0].Func;
+        Com->CoUninitialize = (co_uninitialize *) ComProcs[1].Func;
+        Result = Com->CoInitializeEx(NULL, COINIT_MULTITHREADED);
+        if(FAILED(Result)) {
+            FreeLibrary(Com->Library); 
+        }
+    }
+    if(FAILED(Result)) {
+        *Com = (com) {0};
+    }
+    return Result;
+}
+
+static void EndCom(com *Com) {
+    if(Com->Library) {
+        Com->CoUninitialize();
+        FreeLibrary(Com->Library);
+    }
+}
+
+static HRESULT CreateXAudio2(xaudio2 *XAudio2, const com *Com) {
+    multi_lib LibData = {
+        .VersionCount = 3,
+        .Versions = (const char *[]) {
+            "XAudio2_9.dll",
+            "XAudio2_8.dll",
+            "XAudio2_7.dll" 
+        },
+        .ProcCount = 1,
+        .Procs = (proc []) {{"XAudio2Create"}}
+    };
+    HRESULT Result = LoadProcsVersioned(&XAudio2->Library, &LibData);
+    if(SUCCEEDED(Result)) {
+        XAudio2->Create = (xaudio2_create *) LibData.Procs[0].Func;
+        if(SUCCEEDED(Result)) {
+            Result = XAudio2->Create(&XAudio2->Engine, 0, XAUDIO2_DEFAULT_PROCESSOR);
+            if(SUCCEEDED(Result)) {
+                Result = IXAudio2_CreateMasteringVoice(
+                    XAudio2->Engine, 
+                    &XAudio2->MasterVoice,
+                    XAUDIO2_DEFAULT_CHANNELS,
+                    XAUDIO2_DEFAULT_SAMPLERATE,
+                    0,
+                    NULL,
+                    NULL,
+                    AudioCategory_GameEffects
+                ); 
+                if(FAILED(Result)) {
+                    IXAudio2_Release(XAudio2->Engine);
+                } 
+            }
+        }
+        if(FAILED(Result)) {
+            FreeLibrary(XAudio2->Library);
+        }
+    }
+    if(FAILED(Result)) {
+        *XAudio2 = (xaudio2) {0}; 
+    }
+    return Result;
+}
+
+static void EndXAudio2(xaudio2 *XAudio2) {
+    if(XAudio2->Engine) {
+        IXAudio2_Release(XAudio2->Engine);
+    }
+}
+
+/*XAudio2 Functions*/
 static HRESULT ReadWave(const char *Path, XAUDIO2_BUFFER *Buffer) {
     HRESULT Result = S_OK;
     HANDLE FileHandle = CreateFile(
@@ -918,42 +1104,43 @@ static HRESULT ReadWave(const char *Path, XAUDIO2_BUFFER *Buffer) {
     if(FileHandle != INVALID_HANDLE_VALUE) {
         wave_header Header;
         Result = ReadObject(FileHandle, &Header, sizeof(Header));
-        if(SUCCEEDED(Result) &&
-           Header.idChunk == 0x46464952 &&
-           Header.idFormat == 0x45564157 &&
-           Header.idSubChunk == 0x20746D66 &&
-           Header.wFormatTag == g_SoundEffectFormat.wFormatTag &&
-           Header.nChannels == g_SoundEffectFormat.nChannels && 
-           Header.nSamplesPerSec == g_SoundEffectFormat.nSamplesPerSec &&
-           Header.nBlockAlign == g_SoundEffectFormat.nBlockAlign &&
-           Header.nAvgBytesPerSec == g_SoundEffectFormat.nAvgBytesPerSec &&
-           Header.wBitsPerSample == g_SoundEffectFormat.wBitsPerSample &&
-           Header.idDataChunk == 0x61746164) {
-            void *DataBuf = HeapAlloc(GetProcessHeap(), 0, Header.cbData);
-            if(DataBuf)  {
-                Result = ReadObject(FileHandle, DataBuf, Header.cbData);
-                if(SUCCEEDED(Result)) {
-                    *Buffer = (XAUDIO2_BUFFER) {
-                        .Flags = XAUDIO2_END_OF_STREAM,
-                        .AudioBytes = Header.cbData,  
-                        .pAudioData = DataBuf
-                    };
+        if(SUCCEEDED(Result)) {
+            if(Header.idChunk == 0x46464952 &&
+               Header.idFormat == 0x45564157 &&
+               Header.idSubChunk == 0x20746D66 &&
+               Header.wFormatTag == g_WaveFormat.wFormatTag &&
+               Header.nChannels == g_WaveFormat.nChannels && 
+               Header.nSamplesPerSec == g_WaveFormat.nSamplesPerSec &&
+               Header.nBlockAlign == g_WaveFormat.nBlockAlign &&
+               Header.nAvgBytesPerSec == g_WaveFormat.nAvgBytesPerSec &&
+               Header.wBitsPerSample == g_WaveFormat.wBitsPerSample &&
+               Header.idDataChunk == 0x61746164) {
+                void *DataBuf = HeapAlloc(GetProcessHeap(), 0, Header.cbData);
+                if(DataBuf) {
+                    Result = ReadObject(FileHandle, DataBuf, Header.cbData);
+                    if(SUCCEEDED(Result)) {
+                        *Buffer = (XAUDIO2_BUFFER) {
+                            .Flags = XAUDIO2_END_OF_STREAM,
+                            .AudioBytes = Header.cbData,  
+                            .pAudioData = DataBuf
+                        };
+                    } else {
+                        HeapFree(GetProcessHeap(), 0, DataBuf);
+                    }
                 } else {
-                    HeapFree(GetProcessHeap(), 0, DataBuf);
+                    Result = HRESULT_FROM_WIN32(GetLastError());
                 }
             } else {
-                Result = HRESULT_FROM_WIN32(GetLastError());
+                Result = E_FAIL;
             }
-        } else {
-            Result = S_FALSE;
-        }
+        } 
     } else {
         Result = HRESULT_FROM_WIN32(GetLastError());
     }
     return Result;
 }
 
-static HRESULT PlaySoundEffect(IXAudio2SourceVoice *Voice, XAUDIO2_BUFFER *Buffer) { 
+static HRESULT PlayWave(IXAudio2SourceVoice *Voice, XAUDIO2_BUFFER *Buffer) { 
     HRESULT Result = S_OK;
     if(Buffer->pAudioData) {
         Result = IXAudio2SourceVoice_SubmitSourceBuffer(Voice, Buffer, NULL);
@@ -965,11 +1152,29 @@ static HRESULT PlaySoundEffect(IXAudio2SourceVoice *Voice, XAUDIO2_BUFFER *Buffe
 }
 
 static int IsVoiceEmpty(IXAudio2SourceVoice *Voice) {
-    XAUDIO2_VOICE_STATE VoiceState;
-    IXAudio2SourceVoice_GetState(Voice, &VoiceState, 0);
-    return VoiceState.BuffersQueued == 0;
+    int Result = 1;
+    if(Voice) {
+        XAUDIO2_VOICE_STATE VoiceState;
+        IXAudio2SourceVoice_GetState(Voice, &VoiceState, 0);
+        Result = VoiceState.BuffersQueued == 0; 
+    }
+    return Result;
 }
 
+static HRESULT CreateGenericVoice(IXAudio2 *Engine, IXAudio2SourceVoice **Voice) {
+     return IXAudio2_CreateSourceVoice(
+        Engine,
+        Voice, 
+        &g_WaveFormat,
+        0,
+        XAUDIO2_DEFAULT_FREQ_RATIO,
+        NULL,
+        NULL,
+        NULL
+    );
+}
+
+/*Win32 Functions*/
 static void SetMyWindowPos(HWND Window, DWORD Style, dim_rect Rect) {
     SetWindowLongPtr(Window, GWL_STYLE, Style | WS_VISIBLE);
     SetWindowPos(Window, 
@@ -1022,25 +1227,14 @@ static LRESULT CALLBACK WndProc(HWND Window, UINT Message, WPARAM WParam, LPARAM
     return DefWindowProc(Window, Message, WParam, LParam);
 }
 
-static HMODULE LoadProcs(const char *LibraryName, proc *Procs, int ProcCount) {
-    HMODULE Library = LoadLibrary(LibraryName);
-    if(Library) {
-        for(int I = 0; I < ProcCount; I++) {
-            Procs[I].Func = GetProcAddress(Library, Procs[I].Name);
-            if(!Procs[I].Func) {
-                FreeLibrary(Library);
-                Library = NULL;
-                break;
-            }
-        }
-    }
-    return Library;
-} 
-
 int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdShow) {
-    srand(time(NULL));
+    int TimeStart = time(NULL);
+    srand(TimeStart);
     SetCurrentDirectory("../Shared");
     int Keys[256] = {0};
+
+    /*MuteModeLaunch*/
+    int IsMute = strcmp(CmdLine, "mute") == 0;
 
     /*InitPalletes*/
     const RGBQUAD Palletes[256][4] = {
@@ -1113,62 +1307,21 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
     }
 
     /*InitXAudio2*/
-    int IsXAudio2Valid = 0;
-    IXAudio2 *XAudio2 = NULL;
-    IXAudio2MasteringVoice *MasterVoice = NULL;
-    HMODULE XAudio2Library = NULL;
+    HRESULT XAudio2Result = E_FAIL;
+    com Com;
+    xaudio2 XAudio2 = {0};
 
-    co_initialize_ex *DyCoInitializeEx = NULL; 
-    co_uninitialize *DyCoUninitialize = NULL;
-
-    proc ComProcs[] = {{"CoInitializeEx"}, {"CoUninitialize"}};
-    HMODULE ComLibrary = LoadProcs("ole32.dll", ComProcs, _countof(ComProcs));
-    if(ComLibrary) {
-        DyCoInitializeEx = (co_initialize_ex *) ComProcs[0].Func;
-        DyCoUninitialize = (co_uninitialize *) ComProcs[1].Func;
-        HRESULT HResult = DyCoInitializeEx(NULL, COINIT_MULTITHREADED);
-        if(SUCCEEDED(HResult)) {
-            proc XAudio2Proc = {"XAudio2Create"};
-            if((XAudio2Library = LoadProcs("XAudio2_9.dll", &XAudio2Proc, 1)) ||
-               (XAudio2Library = LoadProcs("XAudio2_8.dll", &XAudio2Proc, 1)) ||
-               (XAudio2Library = LoadProcs("XAudio2_7.dll", &XAudio2Proc, 1))) { 
-
-                xaudio2_create *DyXAudio2Create = (xaudio2_create *) XAudio2Proc.Func;
-                if(SUCCEEDED(HResult)) {
-                    HResult = DyXAudio2Create(&XAudio2, 0, XAUDIO2_DEFAULT_PROCESSOR);
-                    if(SUCCEEDED(HResult)) {
-                        HResult = IXAudio2_CreateMasteringVoice(
-                            XAudio2, 
-                            &MasterVoice,
-                            XAUDIO2_DEFAULT_CHANNELS,
-                            XAUDIO2_DEFAULT_SAMPLERATE,
-                            0,
-                            NULL,
-                            NULL,
-                            AudioCategory_GameEffects
-                        ); 
-                        if(SUCCEEDED(HResult)) { 
-                            IsXAudio2Valid = 1;
-                        }
-                        if(!IsXAudio2Valid) {
-                            IXAudio2_Release(XAudio2);
-                        } 
-                    }
-                }
-                if(!IsXAudio2Valid) {
-                    FreeLibrary(XAudio2Library);
-                }
-            }
-            if(!IsXAudio2Valid) {
-                DyCoUninitialize();
+    if(!IsMute) {
+        XAudio2Result = StartCom(&Com);
+        if(SUCCEEDED(XAudio2Result)) {
+            XAudio2Result = CreateXAudio2(&XAudio2, &Com);
+            if(FAILED(XAudio2Result)) {
+                EndCom(&Com); 
             }
         }
-        if(!IsXAudio2Valid) {
-            FreeLibrary(ComLibrary);
+        if(FAILED(XAudio2Result)) {
+            MessageBox(Window, "XAudio2 could not be initalized", "Error", MB_ICONERROR);
         }
-    }
-    if(!IsXAudio2Valid) {
-        MessageBox(Window, "XAudio2 could not be initalized", "Error", MB_ICONERROR);
     }
 
     /*WaveTest*/
@@ -1178,25 +1331,25 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
     XAUDIO2_BUFFER PressBuffer = {0};
     XAUDIO2_BUFFER GoOutside = {0};
     XAUDIO2_BUFFER GoInside = {0}; 
-    IXAudio2SourceVoice *SourceVoice;
-    if(IsXAudio2Valid) {
-        HRESULT Result = IXAudio2_CreateSourceVoice(
-            XAudio2,
-            &SourceVoice, 
-            &g_SoundEffectFormat,
-            0,
-            XAUDIO2_DEFAULT_FREQ_RATIO,
-            NULL,
-            NULL,
-            NULL
-        );
-        if(SUCCEEDED(Result)) {
+    XAUDIO2_BUFFER PalleteTownMusic = {0};
+    IXAudio2SourceVoice *SoundEffectVoice = NULL;
+    IXAudio2SourceVoice *MusicVoice = NULL;
+    if(SUCCEEDED(XAudio2Result)) {
+        HRESULT SoundEffectResult = CreateGenericVoice(XAudio2.Engine, &SoundEffectVoice);
+        if(SUCCEEDED(SoundEffectResult)) {
             ReadWave("SFX_COLLISION.wav", &CollisionBuffer);
             ReadWave("SFX_LEDGE.wav", &LedgeBuffer);
             ReadWave("SFX_START_MENU.wav", &StartMenuBuffer);
             ReadWave("SFX_PRESS_AB.wav", &PressBuffer);
             ReadWave("SFX_GO_OUTSIDE.wav", &GoOutside);
             ReadWave("SFX_GO_INSIDE.wav", &GoInside);
+        }
+ 
+        HRESULT MusicResult = CreateGenericVoice(XAudio2.Engine, &MusicVoice);
+        if(SUCCEEDED(MusicResult)) {
+            ReadWave("03_pallettown.wav", &PalleteTownMusic);
+            PalleteTownMusic.LoopCount = XAUDIO2_LOOP_INFINITE;
+            PlayWave(MusicVoice, &PalleteTownMusic); 
         }
     }
 
@@ -1255,6 +1408,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
 
     /*InitGameState*/
     game_state GameState = GS_NORMAL;
+    game_state RestoreState = GS_NORMAL;
     int TransitionTick = 0;
     point DoorPoint = {0};
 
@@ -1293,6 +1447,8 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
         }
     };
 
+    int IsSaveYes = 0;
+
     /*InitBag*/
     bag Bag = {0};
     
@@ -1305,6 +1461,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
     const char *ActiveText = "ERROR: NO TEXT";
     point TextTilePt = {1, 14};
     uint64_t TextTick = 0;
+    int BoxDelay = 0;
 
     /*Timing*/
     int64_t Tick = 0;
@@ -1312,19 +1469,10 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
     int64_t PerfFreq = GetPerfFreq();
     int64_t FrameDelta = PerfFreq / 60;
 
-    /*LoadWinmm*/
-    int IsGranular = 0;
+    winmm Winmm; 
+    StartWinmm(&Winmm); 
 
-    winmm_func *DyTimeBeginPeriod = NULL;
-    winmm_func *DyTimeEndPeriod = NULL;
-    proc WinmmProcs[2] = {{"timeBeginPeriod"}, {"timeEndPeriod"}};
-
-    HMODULE WinmmLib = LoadProcs("winmm.dll", WinmmProcs, _countof(WinmmProcs)); 
-    if(WinmmLib) {
-        DyTimeBeginPeriod = (winmm_func *) WinmmProcs[0].Func;
-        DyTimeEndPeriod = (winmm_func *) WinmmProcs[1].Func; 
-        IsGranular = DyTimeBeginPeriod(1) == TIMERR_NOERROR;
-    }
+    int64_t StartCounter = GetPerfCounter(); 
 
     /*MainLoop*/
     ShowWindow(Window, CmdShow);
@@ -1368,18 +1516,19 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             IsFullscreen ^= 1;
         }
 
+        int SpriteI = 0;
+
         /*UpdatePlayer*/
         switch(GameState) {
         case GS_NORMAL:
-        case GS_LEAPING:
             /*PlayerUpdate*/
             IsPauseAttempt |= (Keys[VK_RETURN] == 1);
             if(World.Player.Tick == 0) {
                 if(IsPauseAttempt) {
-                    if(IsVoiceEmpty(SourceVoice)) {
+                    if(IsVoiceEmpty(SoundEffectVoice)) {
                         IsPauseAttempt = 0;
-                        PlaySoundEffect(SourceVoice, &StartMenuBuffer); 
-                        GameState = GS_MENU;
+                        PlayWave(SoundEffectVoice, &StartMenuBuffer); 
+                        GameState = GS_START_MENU;
                         PlaceMenu(WindowMap, MenuSelectI);
                     }
                 } else { 
@@ -1449,7 +1598,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                                       World.Player.Dir == DIR_UP;
                         if(NewQuadInfo.Prop & QUAD_PROP_MESSAGE || IsTV || IsShelf) {
                             GameState = GS_TEXT;
-                            PlaceTextBox(WindowMap, (rect) {0, 12, 20, 18});
+                            RestoreState = GS_NORMAL;
 
                             /*GetActiveText*/
                             if(IsShelf) {
@@ -1473,7 +1622,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                                 } 
                             }
 
-                            TextTilePt = (point) {1, 14};
+                            BoxDelay = 0;
                             TextTick = 16;
 
                             HasMoveKey = 0;
@@ -1502,18 +1651,24 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                     if(HasMoveKey) {
                         GameState = GS_NORMAL;
                         /*MovePlayer*/
-                        if(NewQuadInfo.Prop & QUAD_PROP_DOOR) {
+                        if(NewQuadInfo.Prop & QUAD_PROP_DOOR && 
+                           (!World.IsOverworld || World.Player.Dir == DIR_UP)) {
                             World.Player.IsMoving = 1;
                             World.Player.Tick = 16; 
                             DoorPoint = NewQuadInfo.Point;
                             GameState = GS_TRANSITION;
+                            if(World.IsOverworld) {
+                                PlayWave(SoundEffectVoice, &GoInside);
+                            } else {
+                                PlayWave(SoundEffectVoice, &GoOutside);
+                            }
                             NewPoint.Y--;
                         } else if(World.Player.Dir == DIR_DOWN && 
                                   NewQuadInfo.Prop & QUAD_PROP_EDGE) {
                             World.Player.IsMoving = 1;
                             World.Player.Tick = 32;
                             GameState = GS_LEAPING;
-                            PlaySoundEffect(SourceVoice, &LedgeBuffer);
+                            PlayWave(SoundEffectVoice, &LedgeBuffer);
                         } else if(NewQuadInfo.Prop & QUAD_PROP_SOLID) {
                             World.Player.IsMoving = 0;
                             World.Player.Tick = 16;
@@ -1522,8 +1677,9 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                                 TransitionTick = 32;
                                 DoorPoint = OldQuadInfo.Point;
                                 GameState = GS_TRANSITION;
+                                PlayWave(SoundEffectVoice, &GoOutside);
                             } else { 
-                                PlaySoundEffect(SourceVoice, &CollisionBuffer);
+                                PlayWave(SoundEffectVoice, &CollisionBuffer);
                             }
                         } else {
                             World.Player.IsMoving = 1;
@@ -1572,7 +1728,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                                 .Right = NewPoint.X + 6,
                                 .Bottom = NewPoint.Y - 3
                             };
-                            if(GameState == GS_TRANSITION) {
+                            if(World.IsOverworld && GameState == GS_TRANSITION) {
                                 QuadRect.Bottom += 4;
                                 TileMin.Y -= 2;
                             }
@@ -1616,8 +1772,38 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                 }
             }
             break;
+        case GS_LEAPING:
+            {
+                IsPauseAttempt |= (Keys[VK_RETURN] == 1);
+                /*PlayerUpdateJumpingAnimation*/
+                uint8_t PlayerDeltas[] = {0, 4, 6, 8, 9, 10, 11, 12};
+                uint8_t HalfTick = World.Player.Tick / 2;
+                uint8_t DeltaI = HalfTick < 8 ? HalfTick: 15 - HalfTick;
+                for(int I = 0; I < 4; I++) {
+                    Sprites[I].Y -= PlayerDeltas[DeltaI];
+                }
+
+                /*CreateShadowQuad*/
+                if(HalfTick) {
+                    sprite *ShadowQuad  = &Sprites[SpriteI]; 
+                    ShadowQuad[0] = (sprite) {72, 72, 255, 0};
+                    ShadowQuad[1] = (sprite) {80, 72, 255, SPR_HORZ_FLAG};
+                    ShadowQuad[2] = (sprite) {72, 80, 255, SPR_VERT_FLAG};
+                    ShadowQuad[3] = (sprite) {80, 80, 255, SPR_HORZ_FLAG | SPR_VERT_FLAG};
+                    SpriteI += 4;
+                } else {
+                    GameState = GS_NORMAL;
+                }
+            }
+            break;
         case GS_TEXT:
-            if(ActiveText[0]) {
+            if(BoxDelay >= 0) {
+                if(BoxDelay == 0) {
+                    PlaceTextBox(WindowMap, (rect) {0, 12, 20, 18});
+                    TextTilePt = (point) {1, 14};
+                }
+                BoxDelay--;
+            } else if(ActiveText[0]) {
                 switch(TextTilePt.Y) {
                 case 17:
                     /*MoreTextDisplay*/
@@ -1647,7 +1833,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                         memset(&WindowMap[16][1], MT_BLANK, 18);
                         TextTilePt.Y = 17;
                         TextTick = 8;
-                        PlaySoundEffect(SourceVoice, &PressBuffer); 
+                        PlayWave(SoundEffectVoice, &PressBuffer); 
                     } else {
                         TextTick++;
                     }
@@ -1679,9 +1865,21 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                         ActiveText++;
                     }
                 }
-            } else if(Keys['X'] == 1) {
-                GameState = GS_NORMAL;
-                memset(WindowMap, 0, sizeof(WindowMap));
+            } else {
+                switch(RestoreState) {
+                case GS_SAVE:
+                    GameState = RestoreState;
+                    PlaceTextBox(WindowMap, (rect) {0, 7, 6, 12});
+                    PlaceText(WindowMap, (point) {2, 8}, "YES\nNO");
+                    WindowMap[8][1] = MT_FULL_HORZ_ARROW; 
+                    IsSaveYes = 1;
+                    break;
+                default:
+                    if(Keys['X'] == 1) {
+                        GameState = RestoreState;
+                        memset(WindowMap, 0, sizeof(WindowMap));
+                    }
+                }
             }
             break;
         case GS_TRANSITION:
@@ -1741,15 +1939,14 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                                 ScrollY = 0;
 
                                 memset(OldMap, 0, sizeof(*OldMap));
-                                if(World.Player.Dir == DIR_DOWN) {
+                                if(QuadInfo.Prop & QUAD_PROP_EXIT) {
                                     World.Player.IsMoving = 1;
                                     World.Player.Tick = 16;
                                     PlaceViewMap(&World, TileMap, 1);
                                 } else {
                                     PlaceViewMap(&World, TileMap, 0);
                                 }
-                            }
-
+                            } 
                             GameState = GS_NORMAL;
                             break;
                         }
@@ -1757,13 +1954,11 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                 }
             }
             break;
-        case GS_MENU:
+        case GS_START_MENU:
             if(Keys[VK_RETURN] == 1 || Keys['Z'] == 1) {
-                /*RemoveMenu*/
-                GameState = GS_NORMAL;
-                memset(WindowMap, 0, sizeof(WindowMap));
+                GameState = RemoveStartMenu(WindowMap);
                 if(Keys['Z'] == 1) {
-                    PlaySoundEffect(SourceVoice, &PressBuffer); 
+                    PlayWave(SoundEffectVoice, &PressBuffer); 
                 }
             } else { 
                 /*MoveMenuCursor*/
@@ -1780,10 +1975,38 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                 /*SelectMenuOption*/
                 if(Keys['X'] == 1) {
                     switch(MenuSelectI) {
+                    case 0: /*POKéMON*/
+                        break;
                     case 1: /*ITEM*/
-                        GameState = GS_ITEMS; 
+                        GameState = GS_ITEM; 
                         PlaceBag(WindowMap, &Bag);
                         TextTick = 0;
+                        break;
+                    case 2: /*RED*/
+                        break;
+                    case 3: /*SAVE*/
+                        {
+                            int64_t MinutesElapsed = GetDeltaCounter(StartCounter) / PerfFreq / 60;
+                            int64_t MinutesCorrected = MinInt(99 * 60 + 59, MinutesElapsed);
+                            PlaceTextBox(WindowMap, (rect) {4, 0, 20, 10});
+                            PlaceTextF(
+                                WindowMap, 
+                                (point) {5, 2},
+                                "PLAYER %s\nBADGES       %d\nPOKéDEX    %3d\nTIME     %2d:%02d",
+                                "RED",
+                                0,
+                                0,
+                                MinutesCorrected / 60,
+                                MinutesCorrected % 60
+                            );
+
+                            TextTick = 4;
+                            BoxDelay = 16; 
+                            ActiveText = "Would you like to\nSAVE the game?";
+
+                            GameState = GS_TEXT;
+                            RestoreState = GS_SAVE;
+                        }
                         break;
                     case 4: /*OPTION*/
                         GameState = GS_OPTIONS;
@@ -1806,26 +2029,23 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                         }
                         break;
                     case 5: /*EXIT*/
-                        /*RemoveMenu*/
-                        GameState = GS_NORMAL; 
-                        memset(WindowMap, 0, sizeof(WindowMap));
+                        GameState = RemoveStartMenu(WindowMap);
                         break;
                     }
-                    PlaySoundEffect(SourceVoice, &PressBuffer); 
+                    PlayWave(SoundEffectVoice, &PressBuffer); 
                 }
             }
             break;
-        case GS_ITEMS:
+        case GS_ITEM:
             if(Keys['Z'] == 1 || (Keys['X'] == 1 && Bag.ItemSelect == Bag.ItemCount)) {
                 /*RemoveSubMenu*/
-                GameState = GS_MENU;
-                memset(WindowMap, 0, sizeof(WindowMap));
+                GameState = GS_START_MENU;
                 PlaceMenu(WindowMap, MenuSelectI);
-                PlaySoundEffect(SourceVoice, &PressBuffer); 
+                PlayWave(SoundEffectVoice, &PressBuffer); 
             } else {
                 /*MoveTextCursor*/
                 if(Keys['X'] == 1) {
-                    PlaySoundEffect(SourceVoice, &PressBuffer); 
+                    PlayWave(SoundEffectVoice, &PressBuffer); 
                 } else if(Keys[VK_UP] % 10 == 1 && Bag.ItemSelect > 0) {
                     Bag.ItemSelect--; 
                     if(Bag.Y > 0) {
@@ -1849,14 +2069,28 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                 }
             }
             break;
+        case GS_SAVE:
+            if(Keys['X'] == 1 || Keys['Z'] == 1) {
+                GameState = RemoveStartMenu(WindowMap);
+                PlayWave(SoundEffectVoice, &PressBuffer); 
+            } else if(Keys[VK_UP] == 1) {
+                WindowMap[10][1] = MT_BLANK; 
+                IsSaveYes = 1;
+                WindowMap[8][1] = MT_FULL_HORZ_ARROW; 
+
+            } else if(Keys[VK_DOWN] == 1) {
+                WindowMap[8][1] = MT_BLANK; 
+                IsSaveYes = 0;
+                WindowMap[10][1] = MT_FULL_HORZ_ARROW; 
+            }
+            break;
         case GS_OPTIONS:
             if(Keys[VK_RETURN] == 1 || Keys['Z'] == 1 ||
                (Keys['X'] == 1 && OptionI == OPT_CANCEL)) {
                 /*RemoveSubMenu*/
-                GameState = GS_MENU;
-                memset(WindowMap, 0, sizeof(WindowMap));
+                GameState = GS_START_MENU;
                 PlaceMenu(WindowMap, MenuSelectI);
-                PlaySoundEffect(SourceVoice, &PressBuffer); 
+                PlayWave(SoundEffectVoice, &PressBuffer); 
             } else {
                 /*MoveOptionsCursor*/
                 if(Keys[VK_UP] == 1) {
@@ -1906,20 +2140,14 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             break;
         }
 
-        int SprI = 0;
-
         /*UpdatePlayer*/
-        sprite *SpriteQuad = &Sprites[SprI];
-        point PlayerPt = {72, 72};
         int CanPlayerMove = GameState == GS_NORMAL || 
                             GameState == GS_LEAPING || 
                             GameState == GS_TRANSITION;
-        UpdateAnimation(&World.Player, SpriteQuad, PlayerPt);
         if(CanPlayerMove && World.Player.Tick > 0) {
             if(World.Player.Tick % 16 == 8) {
                 World.Player.IsRight ^= 1;
             }
-            MoveEntity(&World.Player);
             if(World.Player.IsMoving && World.Player.Tick % 2 == 0) {
                 switch(World.Player.Dir) {
                 case DIR_UP:
@@ -1936,14 +2164,36 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                     break;
                 }
             }
+            MoveEntity(&World.Player);
         }
-        SprI += 4;
+        sprite *SpriteQuad = &Sprites[SpriteI];
+        UpdateAnimation(&World.Player, SpriteQuad, (point) {72, 72});
+        SpriteI += 4;
    
         /*UpdateObjects*/
         for(int MapI = 0; MapI < _countof(World.Maps); MapI++) {
             for(int ObjI = 0; ObjI < World.Maps[MapI].ObjectCount; ObjI++) {
                 object *Object = &World.Maps[MapI].Objects[ObjI];
-                sprite *SpriteQuad = &Sprites[SprI];
+
+                /*TickFrame*/
+                if(GameState == GS_NORMAL) {
+                    if(Object->Speed == 0) {
+                        if(Object->Tick > 0) {
+                            Object->Tick--; 
+                        } else {
+                            Object->Dir = Object->StartingDir;
+                        }
+                        if(Object->Tick % 16 == 8) {
+                            Object->IsRight ^= 1;
+                        }
+                    } else if(Object->Tick > 0) {
+                        MoveEntity(Object);
+                    } else if(!IsPauseAttempt) {
+                        RandomMove(&World, MapI, Object);
+                    }
+                }
+
+                /*GetObjectRenderPos*/
                 point QuadPt = {
                     Object->Pos.X - World.Player.Pos.X + 72,
                     Object->Pos.Y - World.Player.Pos.Y + 72
@@ -1966,50 +2216,12 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                     }
                 }
 
-                if(ObjectInUpdateBounds(QuadPt)) {
+                /*RenderObject*/
+                if(ObjectInUpdateBounds(QuadPt) && SpriteI < 40) {
+                    sprite *SpriteQuad = &Sprites[SpriteI];
                     UpdateAnimation(Object, SpriteQuad, QuadPt);
-                    /*TickFrame*/
-                    if(GameState == GS_NORMAL) {
-                        if(Object->Speed == 0) {
-                            if(Object->Tick > 0) {
-                                Object->Tick--; 
-                            } else {
-                                Object->Dir = Object->StartingDir;
-                            }
-                            if(Object->Tick % 16 == 8) {
-                                Object->IsRight ^= 1;
-                            }
-                        } else if(Object->Tick > 0) {
-                            MoveEntity(Object);
-                        } else if(!IsPauseAttempt) {
-                            RandomMove(&World, MapI, Object);
-                        }
-                    }
-                    SprI += 4;
+                    SpriteI += 4;
                 }
-            }
-        }
-
-        /*UpdateLeapingAnimations*/
-        if(GameState == GS_LEAPING) {
-            /*PlayerUpdateJumpingAnimation*/
-            uint8_t PlayerDeltas[] = {0, 4, 6, 8, 9, 10, 11, 12};
-            uint8_t HalfTick = World.Player.Tick / 2;
-            uint8_t DeltaI = HalfTick < 8 ? HalfTick: 15 - HalfTick;
-            for(int I = 0; I < 4; I++) {
-                Sprites[I].Y -= PlayerDeltas[DeltaI];
-            }
-
-            /*CreateShadowQuad*/
-            if(HalfTick) {
-                sprite *ShadowQuad  = &Sprites[SprI]; 
-                ShadowQuad[0] = (sprite) {72, 72, 255, 0};
-                ShadowQuad[1] = (sprite) {80, 72, 255, SPR_HORZ_FLAG};
-                ShadowQuad[2] = (sprite) {72, 80, 255, SPR_VERT_FLAG};
-                ShadowQuad[3] = (sprite) {80, 80, 255, SPR_HORZ_FLAG | SPR_VERT_FLAG};
-                SprI += 4;
-            } else {
-                GameState = GS_NORMAL;
             }
         }
 
@@ -2059,7 +2271,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
         int MaxX = BM_WIDTH;
         int MaxY = BM_HEIGHT;
 
-        for(size_t I = SprI; I-- > 0; ) {
+        for(int I = 0; I < SpriteI; I++) {
             int RowsToRender = 8;
             if(Sprites[I].Y < 8) {
                 RowsToRender = Sprites[I].Y;
@@ -2139,7 +2351,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
         /*SleepTillNextFrame*/
         int64_t InitDeltaCounter = GetDeltaCounter(BeginCounter);
         if(InitDeltaCounter < FrameDelta) {
-            if(IsGranular) {
+            if(Winmm.IsGranular) {
                 int64_t RemainCounter = FrameDelta - InitDeltaCounter;
                 uint32_t SleepMS = 1000 * RemainCounter / PerfFreq;
                 if(SleepMS > 0) {
@@ -2154,15 +2366,10 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
         UpdateWindow(Window);
         Tick++;
     }
-    if(IsXAudio2Valid) {
-        IXAudio2_Release(XAudio2);
-        DyCoUninitialize();
-    }
+    EndCom(&Com); 
+    EndXAudio2(&XAudio2);
 
-    if(DyTimeEndPeriod) {
-        DyTimeEndPeriod(1);
-    }
-
+    EndWinmm(&Winmm); 
     return 0;
 }
 
