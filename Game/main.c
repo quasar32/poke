@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 #include <time.h>
 #include <windows.h>
 #include <xaudio2.h>
@@ -34,15 +35,17 @@
 #define TILE_LENGTH 8
 #define TILE_SIZE 64
 
-#define LE_RIFF 'FFIR'
-#define LE_WAVE 'EVAW'
-#define LE_FMT 'tmf'
-#define LE_DATA 'atad'
+#define LE_RIFF 0x46464952 
+#define LE_WAVE 0x45564157 
+#define LE_FMT 0x20746D66 
+#define LE_DATA 0x61746164
 
 /*Typedefs*/
 typedef uint8_t tile_map[32][32];
+typedef uint8_t bm_pixels[BM_HEIGHT][BM_WIDTH];
+
 typedef HRESULT WINAPI xaudio2_create(IXAudio2** pxaudio2, UINT32 flags, XAUDIO2_PROCESSOR processor);
-typedef MMRESULT WINAPI winmm_func (UINT);
+typedef MMRESULT WINAPI winmm_func(UINT);
 typedef HRESULT WINAPI co_uninitialize(void);
 typedef HRESULT WINAPI co_initialize_ex(LPVOID pvReserved, DWORD dwCoInit);
 
@@ -63,19 +66,31 @@ typedef enum menu_tile {
 } menu_tile;
 
 typedef enum game_state {
+    /*Start*/
+    GS_MAIN_MENU,
+    GS_CONTINUE,
+
+    /*Game*/
     GS_NORMAL,
     GS_LEAPING,
     GS_TEXT,
     GS_TRANSITION,
-    GS_START_MENU,
 
-    /*SubMenu*/
+    /*Menu*/
+    GS_START_MENU,
     GS_ITEM,
     GS_SAVE,
     GS_OPTIONS,
 } game_state; 
 
-/*Structures*/
+typedef enum option_names {
+    OPT_TEXT_SPEED,
+    OPT_BATTLE_ANIMATION, 
+    OPT_BATTLE_STYLE,
+    OPT_CANCEL,
+} option_names;
+
+/*Coord Structures*/
 typedef struct point {
     short X;
     short Y;
@@ -94,6 +109,27 @@ typedef struct rect {
     short Right;
     short Bottom;
 } rect;
+
+/*Render Structures*/
+typedef struct sprite {
+    uint8_t X;
+    uint8_t Y;
+    uint8_t Tile;
+    uint8_t Flags;
+} sprite;
+
+typedef struct bitmap {
+    BITMAPINFO *Info;
+    uint8_t Pixels[BM_HEIGHT][BM_WIDTH];
+} bitmap;
+
+/*World Structures*/
+typedef struct quad_info {
+    point Point;
+    int Map;
+    int Quad;
+    int Prop;
+} quad_info;
 
 typedef struct door {
     point Pos;
@@ -122,6 +158,9 @@ typedef struct object {
 } object;
 
 typedef struct map {
+    char Path[256];
+    int PathLen;
+
     int16_t Width;
     int16_t Height;
     int16_t DefaultQuad;
@@ -138,25 +177,6 @@ typedef struct map {
     object Objects[256];
 } map;
 
-typedef struct sprite {
-    uint8_t X;
-    uint8_t Y;
-    uint8_t Tile;
-    uint8_t Flags;
-} sprite;
-
-typedef struct quad_info {
-    point Point;
-    int Map;
-    int Quad;
-    int Prop;
-} quad_info;
-
-typedef struct error { 
-    const char *Func;
-    const char *Error;
-} error;
-
 typedef struct data_path {
     const char *Tile;
     const char *Quad;
@@ -168,7 +188,7 @@ typedef struct world {
     uint8_t QuadProps[128];
     uint8_t QuadData[128][4];
 
-    const char *MapPaths[WORLD_HEIGHT][WORLD_WIDTH];
+    const char *OverworldMapPaths[WORLD_HEIGHT][WORLD_WIDTH];
 
     int DataPathI;
     data_path DataPaths[2];
@@ -181,11 +201,75 @@ typedef struct world {
     int IsOverworld;
 } world;
 
-typedef struct run_buffer {
+/*IO Structs*/
+typedef struct read_buffer {
     uint8_t Data[65536];
     int Index;
     int Size;
-} run_buffer;
+} read_buffer;
+
+typedef struct write_buffer {
+    uint8_t Data[4096];
+    int Index;
+} write_buffer;
+
+/*Library Structs*/
+typedef struct proc {
+    const char *Name;
+    FARPROC Func;
+} proc;
+
+typedef struct multi_lib {
+    size_t VersionCount; 
+    const char **Versions;
+
+    size_t ProcCount; 
+    proc *Procs;
+} multi_lib;
+    
+typedef struct com {
+    HMODULE Library;
+    co_initialize_ex *CoInitializeEx; 
+    co_uninitialize *CoUninitialize;
+} com;
+
+typedef struct winmm {
+    HMODULE Library;
+    winmm_func *TimeBeginPeriod;
+    winmm_func *TimeEndPeriod;
+    int IsGranular;
+} winmm;
+
+typedef struct xaudio2 {
+    HMODULE Library;
+    xaudio2_create *Create;
+    IXAudio2 *Engine;
+    IXAudio2MasteringVoice *MasterVoice;
+} xaudio2;
+
+typedef struct wave_header {
+    DWORD idChunk;
+    DWORD cbChunk;
+    DWORD idFormat;
+    DWORD idSubChunk;
+    DWORD cbSubChunk;
+    WORD wFormatTag;
+    WORD nChannels;
+    DWORD nSamplesPerSec;
+    DWORD nAvgBytesPerSec;
+    WORD nBlockAlign;
+    WORD wBitsPerSample;
+    DWORD idDataChunk;
+    DWORD cbData;
+} wave_header;
+
+/*Menu Structs*/
+typedef struct menu {
+    const char *Text;
+    rect Rect;
+    int SelectI;
+    int EndI;
+} menu;
 
 typedef struct option {
     int Y;
@@ -207,60 +291,10 @@ typedef struct bag {
     int Y;
 } bag;
 
-typedef struct proc {
-    const char *Name;
-    FARPROC Func;
-} proc;
-
-typedef struct multi_lib {
-    size_t VersionCount; 
-    const char **Versions;
-
-    size_t ProcCount; 
-    proc *Procs;
-} multi_lib;
-    
-typedef struct wave_header {
-    DWORD idChunk;
-    DWORD cbChunk;
-    DWORD idFormat;
-    DWORD idSubChunk;
-    DWORD cbSubChunk;
-    WORD wFormatTag;
-    WORD nChannels;
-    DWORD nSamplesPerSec;
-    DWORD nAvgBytesPerSec;
-    WORD nBlockAlign;
-    WORD wBitsPerSample;
-    DWORD idDataChunk;
-    DWORD cbData;
-} wave_header;
-
-typedef struct com {
-    HMODULE Library;
-    co_initialize_ex *CoInitializeEx; 
-    co_uninitialize *CoUninitialize;
-} com;
-
-typedef struct winmm {
-    HMODULE Library;
-    winmm_func *TimeBeginPeriod;
-    winmm_func *TimeEndPeriod;
-    int IsGranular;
-} winmm;
-
-typedef struct xaudio2 {
-    HMODULE Library;
-    xaudio2_create *Create;
-    IXAudio2 *Engine;
-    IXAudio2MasteringVoice *MasterVoice;
-} xaudio2;
-
-typedef struct active_text {
-    const char *Str;
-    point TilePt;
-    uint64_t Tick;
-} active_text; 
+typedef struct options_menu {
+   option E[4]; 
+   int I;
+} options_menu;
 
 /*Global Constants*/
 static const point g_DirPoints[] = {
@@ -286,10 +320,6 @@ static const WAVEFORMATEX g_WaveFormat = {
     .wBitsPerSample = 16
 };
 
-/*Globals*/
-static uint8_t g_BmPixels[BM_HEIGHT][BM_WIDTH];
-static BITMAPINFO *g_BmInfo;
-
 /*Math Functions*/
 static int MinInt(int A, int B) {
     return A < B ? A : B;
@@ -303,6 +333,10 @@ static int AbsInt(int Val) {
     return Val < 0 ? -Val : Val; 
 }
 
+static int64_t MinInt64(int64_t A, int64_t B) {
+    return A < B ? A : B;
+}
+
 static int PosIntMod(int A, int B) {
     return A % B < 0 ? A % B + AbsInt(B) : A % B; 
 }
@@ -313,6 +347,11 @@ static int ReverseDir(int Dir) {
 
 static int CorrectTileCoord(int TileCoord) {
     return PosIntMod(TileCoord, 32);
+}
+
+/*String Functions*/
+static int AreStringsEqual(const char *A, const char *B) {
+    return A && B ? strcmp(A, B) == 0 : A != B;
 }
 
 /*Timing*/
@@ -331,6 +370,20 @@ static int64_t GetPerfCounter(void) {
 static int64_t GetDeltaCounter(int64_t BeginCounter) {
     return GetPerfCounter() - BeginCounter;
 }
+
+static void SleepTillNextFrame(int64_t Counter, int64_t Delta, int64_t PerfFreq, int IsGranular) {
+    int64_t InitDeltaCounter = GetDeltaCounter(Counter);
+    if(InitDeltaCounter < Delta) {
+        if(IsGranular) {
+            int64_t RemainCounter = Delta - InitDeltaCounter;
+            uint32_t SleepMS = 1000 * RemainCounter / PerfFreq;
+            if(SleepMS > 0) {
+                Sleep(SleepMS);
+            }
+        }
+        while(GetDeltaCounter(Counter) < Delta);
+    }
+} 
 
 /*Point Functions*/ 
 static point AddPoints(point A, point B)  {
@@ -423,7 +476,7 @@ static void SetToTiles(tile_map TileMap, int TileX, int TileY, const uint8_t Set
     TileMap[TileY + 1][TileX + 1] = Set[3];
 }
 
-static int GetMapDir(const map Maps[static 2], int Map) {
+static int GetMapDir(const map Maps[2], int Map) {
     point DirPoint = SubPoints(Maps[!Map].Loaded, Maps[Map].Loaded);
     for(size_t I = 0; I < _countof(g_DirPoints); I++) {
         if(EqualPoints(DirPoint, g_DirPoints[I])) {
@@ -484,33 +537,221 @@ static quad_info GetQuad(const world *World, point Point) {
     return QuadInfo;
 }
 
-/*RunBuffer Functions*/
-static uint8_t RunBufferGetByte(run_buffer *RunBuffer) {
+/*Render Functions*/
+static void RenderTileMap(bm_pixels Pixels, tile_map TileMap, uint8_t TileData[256][64], int ScrollX, int ScrollY) {
+    uint8_t (*BmRow)[BM_WIDTH] = Pixels;
+
+    for(int PixelY = 0; PixelY < BM_HEIGHT; PixelY++) {
+        int PixelX = 8 - (ScrollX & 7);
+        int SrcYDsp = ((PixelY + ScrollY) & 7) << 3;
+        int TileX = ScrollX >> 3;
+        int TileY = (PixelY + ScrollY) / 8 % 32;
+        int StartOff = SrcYDsp | (ScrollX & 7);
+        memcpy(*BmRow, &TileData[TileMap[TileY][TileX]][StartOff], 8);
+
+        for(int Repeat = 1; Repeat < 20; Repeat++) {
+            TileX = (TileX + 1) % 32;
+            uint8_t *Pixel = *BmRow + PixelX;
+            memcpy(Pixel, &TileData[TileMap[TileY][TileX]][SrcYDsp], 8);
+
+            PixelX += 8;
+        }
+        TileX = (TileX + 1) % 32;
+        uint8_t *Pixel = *BmRow + PixelX;
+        int RemainX = BM_WIDTH - PixelX;
+        memcpy(Pixel, &TileData[TileMap[TileY][TileX]][SrcYDsp], RemainX);
+        BmRow++;
+    }
+}
+
+static void RenderWindowMap(bm_pixels Pixels, tile_map TileMap, uint8_t TileData[256][64]) {
+    for(int PixelY = 0; PixelY < BM_HEIGHT; PixelY++) {
+        int PixelX = 0;
+        int SrcYDsp = (PixelY & 7) << 3;
+        int TileY = PixelY / 8;
+
+        for(int TileX = 0; TileX < 20; TileX++) {
+            if(TileMap[TileY][TileX]) {
+                memcpy(&Pixels[PixelY][PixelX], &TileData[TileMap[TileY][TileX]][SrcYDsp], 8); 
+            }
+            PixelX += 8;
+        }
+    }
+}
+
+static void RenderSprites(bm_pixels Pixels, sprite *Sprites, int Count, uint8_t Data[256][64]) {
+    for(int I = 0; I < Count; I++) {
+        int RowsToRender = 8;
+        if(Sprites[I].Y < 8) {
+            RowsToRender = Sprites[I].Y;
+        } else if(Sprites[I].Y > BM_HEIGHT) {
+            RowsToRender = MaxInt(BM_HEIGHT + 8 - Sprites[I].Y, 0);
+        }
+
+        int ColsToRender = 8;
+        if(Sprites[I].X < 8) {
+            ColsToRender = Sprites[I].X;
+        } else if(Sprites[I].X > BM_WIDTH) {
+            ColsToRender = MaxInt(BM_WIDTH + 8 - Sprites[I].X, 0);
+        }
+
+        int DstX = MaxInt(Sprites[I].X - 8, 0);
+        int DstY = MaxInt(Sprites[I].Y - 8, 0);
+
+        int SrcX = MaxInt(8 - Sprites[I].X, 0);
+        int DispX = 1;
+        if(Sprites[I].Flags & SPR_HORZ_FLAG) {
+            SrcX = MinInt(Sprites[I].X, 7);
+            DispX = -1;
+        }
+        int DispY = 8;
+        int SrcY = MaxInt(8 - Sprites[I].Y, 0);
+        if(Sprites[I].Flags & SPR_VERT_FLAG) {
+            SrcY = MinInt(Sprites[I].Y, 7);
+            DispY = -8;
+        }
+
+        uint8_t *Src = &Data[Sprites[I].Tile][SrcY * TILE_LENGTH + SrcX];
+
+        for(int Y = 0; Y < RowsToRender; Y++) {
+            uint8_t *Tile = Src;
+            for(int X = 0; X < ColsToRender; X++) {
+                if(*Tile != 2) {
+                    Pixels[Y + DstY][X + DstX] = *Tile;
+                }
+                Tile += DispX;
+            }
+            Src += DispY;
+        }
+    }
+}
+
+/*WriteBuffer Functions*/
+static void WriteBufferPushByte(write_buffer *WriteBuffer, int Byte) {
+    if(WriteBuffer->Index < _countof(WriteBuffer->Data)) {
+        WriteBuffer->Data[WriteBuffer->Index] = Byte;
+        WriteBuffer->Index++;
+    } 
+}
+
+static void WriteBufferPushObject(write_buffer *WriteBuffer, const void *Object, size_t Size) {
+    if(WriteBuffer->Index + Size <= _countof(WriteBuffer->Data)) {
+        memcpy(&WriteBuffer->Data[WriteBuffer->Index], Object, Size);
+        WriteBuffer->Index += Size;
+    }
+}
+
+static void WriteBufferPushSaveObject(write_buffer *WriteBuffer, const object *Object) {
+    WriteBufferPushByte(WriteBuffer, Object->Pos.X / 16);
+    WriteBufferPushByte(WriteBuffer, Object->Pos.Y / 16);
+    WriteBufferPushByte(WriteBuffer, Object->Speed == 0 ? Object->StartingDir : Object->Dir);
+}
+
+static void WriteBufferPushSaveObjects(write_buffer *WriteBuffer, const map *Map) {
+    for(int I = 0; I < Map->ObjectCount; I++) {
+        WriteBufferPushSaveObject(WriteBuffer, &Map->Objects[I]);
+    }
+}
+
+static void WriteBufferPushString(write_buffer *WriteBuffer, const char *Str, int Length) {
+    WriteBufferPushByte(WriteBuffer, Length);
+    WriteBufferPushObject(WriteBuffer, Str, Length);
+}
+
+/*Write Functions*/
+static BOOL WriteAll(LPCSTR Path, LPCVOID Data, DWORD Size) {
+    BOOL Success = FALSE;
+    HANDLE FileHandle = CreateFile(
+        Path,
+        GENERIC_WRITE,
+        FILE_SHARE_READ,
+        NULL,
+        CREATE_ALWAYS,
+        FILE_ATTRIBUTE_NORMAL,
+        NULL
+    ); 
+    if(FileHandle != INVALID_HANDLE_VALUE) {
+        DWORD BytesWritten;
+        WriteFile(FileHandle, Data, Size, &BytesWritten, NULL);
+        if(BytesWritten == Size) {
+            Success = TRUE;
+        } 
+        CloseHandle(FileHandle);
+    }
+    return Success;
+}
+
+static BOOL WriteSave(const world *World, const bag *Bag, int SaveSec) {
+    write_buffer WriteBuffer = {0};
+    WriteBufferPushObject(&WriteBuffer, &SaveSec, sizeof(SaveSec));
+    WriteBufferPushByte(&WriteBuffer, Bag->ItemCount);
+    for(int I = 0; I < Bag->ItemCount; I++) {
+        WriteBufferPushByte(&WriteBuffer, Bag->Items[I].ID);
+        WriteBufferPushByte(&WriteBuffer, Bag->Items[I].Count);
+    }
+
+    const map *CurMap = &World->Maps[World->MapI];
+    const map *OthMap = &World->Maps[!World->MapI];
+
+    WriteBufferPushString(&WriteBuffer, CurMap->Path, CurMap->PathLen);
+    WriteBufferPushString(&WriteBuffer, OthMap->Path, OthMap->PathLen);
+
+    WriteBufferPushByte(&WriteBuffer, World->Player.Tile);
+    WriteBufferPushSaveObject(&WriteBuffer, &World->Player);
+    WriteBufferPushSaveObjects(&WriteBuffer, CurMap);
+    WriteBufferPushSaveObjects(&WriteBuffer, OthMap);
+
+    return WriteAll("Save", WriteBuffer.Data, WriteBuffer.Index);
+}
+
+/*ReadBuffer Functions*/
+static uint8_t ReadBufferPopByte(read_buffer *ReadBuffer) {
     uint8_t Result = 0;
-    if(RunBuffer->Index < RunBuffer->Size) {
-        Result = RunBuffer->Data[RunBuffer->Index]; 
-        RunBuffer->Index++;
+    if(ReadBuffer->Index < ReadBuffer->Size) {
+        Result = ReadBuffer->Data[ReadBuffer->Index]; 
+        ReadBuffer->Index++;
     } 
     return Result;
 }
 
-static void RunBufferGetString(run_buffer *RunBuffer, char Str[256]) {
-    uint8_t Length = RunBufferGetByte(RunBuffer); 
-    int Left = RunBuffer->Size - RunBuffer->Index; 
+static void ReadBufferPopObject(read_buffer *ReadBuffer, void *Object, size_t Size) {
+    if(ReadBuffer->Index + Size <= ReadBuffer->Size) {
+        memcpy(Object, &ReadBuffer->Data[ReadBuffer->Index], Size); 
+        ReadBuffer->Index += Size;
+    } else {
+        memset(Object, 0, Size);
+    } 
+}
+
+static void ReadBufferPopString(read_buffer *ReadBuffer, char Str[256]) {
+    uint8_t Length = ReadBufferPopByte(ReadBuffer); 
+    int Left = ReadBuffer->Size - ReadBuffer->Index; 
     if(Left < Length) {
         Length = Left;
     }
-    memcpy(Str, &RunBuffer->Data[RunBuffer->Index], Length);
+    memcpy(Str, &ReadBuffer->Data[ReadBuffer->Index], Length);
     Str[Length] = '\0';
-    RunBuffer->Index += Length;
+    ReadBuffer->Index += Length;
 }
 
-/*Data Loader*/
-static HRESULT ReadObject(HANDLE FileHandle, void *Object, DWORD ObjectSize) {
+static void ReadBufferPopSaveObject(read_buffer *ReadBuffer, object *Object) {
+    Object->Pos.X = ReadBufferPopByte(ReadBuffer) * 16;
+    Object->Pos.Y = ReadBufferPopByte(ReadBuffer) * 16;
+    Object->Dir = ReadBufferPopByte(ReadBuffer) % 4;
+}
+
+static void ReadBufferPopSaveObjects(read_buffer *ReadBuffer, map *Map) {
+    for(int I = 0; I < Map->ObjectCount; I++) {
+        ReadBufferPopSaveObject(ReadBuffer, &Map->Objects[I]);
+    }
+}
+
+/*Read Functions*/
+static HRESULT ReadObject(HANDLE FileHandle, LPVOID Object, DWORD ObjectSize) {
     HRESULT Result = S_OK;
     DWORD BytesRead;
     if(ReadFile(FileHandle, Object, ObjectSize, &BytesRead, NULL)) {
-        if(BytesRead != ObjectSize) {
+        if(BytesRead < ObjectSize) {
             Result = E_FAIL;
         }
     } else {
@@ -519,8 +760,8 @@ static HRESULT ReadObject(HANDLE FileHandle, void *Object, DWORD ObjectSize) {
     return Result;
 }
 
-static int ReadAll(const char *Path, void *Bytes, int ToRead) {
-    int Result = 0;
+static DWORD ReadAll(LPCTSTR Path, LPVOID Bytes, DWORD ToRead) {
+    DWORD BytesRead = 0;
     HANDLE FileHandle = CreateFile(
         Path, 
         GENERIC_READ, 
@@ -531,13 +772,11 @@ static int ReadAll(const char *Path, void *Bytes, int ToRead) {
         NULL
     );
     if(FileHandle != INVALID_HANDLE_VALUE) { 
-        DWORD BytesRead;     
         ReadFile(FileHandle, Bytes, ToRead, &BytesRead, NULL);
-        Result = BytesRead;
         CloseHandle(FileHandle);
     }
                  
-    return Result;
+    return BytesRead;
 }
 
 static void ReadTileData(const char *Path, uint8_t TileData[][TILE_SIZE], int TileCount) {
@@ -555,26 +794,31 @@ static void ReadTileData(const char *Path, uint8_t TileData[][TILE_SIZE], int Ti
 }
 
 static void ReadMap(world *World, int MapI, const char *Path) {
-    run_buffer RunBuffer = {0};
-    RunBuffer.Size = ReadAll(Path, RunBuffer.Data, sizeof(RunBuffer.Data));
+    read_buffer ReadBuffer = {
+        .Size = ReadAll(Path, ReadBuffer.Data, sizeof(ReadBuffer.Data))
+    };
+
+    /*SaveMapPath*/
+    map *Map = &World->Maps[MapI];
+    Map->PathLen = strlen(Path);
+    memcpy(Map->Path, Path, Map->PathLen + 1);
 
     /*ReadQuadSize*/
-    map *Map = &World->Maps[MapI];
-    Map->Width = RunBufferGetByte(&RunBuffer) + 1;
-    Map->Height = RunBufferGetByte(&RunBuffer) + 1;
+    Map->Width = ReadBufferPopByte(&ReadBuffer) + 1;
+    Map->Height = ReadBufferPopByte(&ReadBuffer) + 1;
     int Size = Map->Width * Map->Height;
 
     /*ReadQuads*/
     int QuadIndex = 0;
     while(QuadIndex < Size) {
-        int QuadRaw = RunBufferGetByte(&RunBuffer);
+        int QuadRaw = ReadBufferPopByte(&ReadBuffer);
         int Quad = QuadRaw & 127;
         int Repeat = 0;
 
         if(Quad == QuadRaw) {
             Repeat = 1;
         } else { 
-            Repeat = RunBufferGetByte(&RunBuffer) + 1;
+            Repeat = ReadBufferPopByte(&ReadBuffer) + 1;
         }
 
         Repeat = MinInt(Size - QuadIndex, Repeat);
@@ -587,40 +831,40 @@ static void ReadMap(world *World, int MapI, const char *Path) {
     }
 
     /*DefaultQuad*/
-    Map->DefaultQuad = RunBufferGetByte(&RunBuffer) & 127;
+    Map->DefaultQuad = ReadBufferPopByte(&ReadBuffer) & 127;
 
     /*ReadText*/
-    Map->TextCount = RunBufferGetByte(&RunBuffer);
+    Map->TextCount = ReadBufferPopByte(&ReadBuffer);
     for(int I = 0; I < Map->TextCount; I++) {
-        Map->Texts[I].Pos.X = RunBufferGetByte(&RunBuffer);
-        Map->Texts[I].Pos.Y = RunBufferGetByte(&RunBuffer);
-        RunBufferGetString(&RunBuffer, Map->Texts[I].Str);
+        Map->Texts[I].Pos.X = ReadBufferPopByte(&ReadBuffer);
+        Map->Texts[I].Pos.Y = ReadBufferPopByte(&ReadBuffer);
+        ReadBufferPopString(&ReadBuffer, Map->Texts[I].Str);
     }
 
     /*ReadObjects*/
-    Map->ObjectCount = RunBufferGetByte(&RunBuffer);
+    Map->ObjectCount = ReadBufferPopByte(&ReadBuffer);
     for(int I = 0; I < Map->ObjectCount; I++) {
-        Map->Objects[I].Pos.X = RunBufferGetByte(&RunBuffer) * 16;
-        Map->Objects[I].Pos.Y = RunBufferGetByte(&RunBuffer) * 16;
-        Map->Objects[I].StartingDir = RunBufferGetByte(&RunBuffer) & 3;
+        Map->Objects[I].Pos.X = ReadBufferPopByte(&ReadBuffer) * 16;
+        Map->Objects[I].Pos.Y = ReadBufferPopByte(&ReadBuffer) * 16;
+        Map->Objects[I].StartingDir = ReadBufferPopByte(&ReadBuffer) & 3;
         Map->Objects[I].Dir = Map->Objects[I].StartingDir;  
-        Map->Objects[I].Speed = RunBufferGetByte(&RunBuffer) % 2;
-        Map->Objects[I].Tile = RunBufferGetByte(&RunBuffer) & 0xF0;
-        RunBufferGetString(&RunBuffer, Map->Objects[I].Str);
+        Map->Objects[I].Speed = ReadBufferPopByte(&ReadBuffer) % 2;
+        Map->Objects[I].Tile = ReadBufferPopByte(&ReadBuffer) & 0xF0;
+        ReadBufferPopString(&ReadBuffer, Map->Objects[I].Str);
     }
 
     /*ReadDoors*/
-    Map->DoorCount = RunBufferGetByte(&RunBuffer);
+    Map->DoorCount = ReadBufferPopByte(&ReadBuffer);
     for(int I = 0; I < Map->DoorCount; I++) {
-        Map->Doors[I].Pos.X = RunBufferGetByte(&RunBuffer);
-        Map->Doors[I].Pos.Y = RunBufferGetByte(&RunBuffer);
-        Map->Doors[I].DstPos.X = RunBufferGetByte(&RunBuffer);
-        Map->Doors[I].DstPos.Y = RunBufferGetByte(&RunBuffer);
-        RunBufferGetString(&RunBuffer, Map->Doors[I].Path);
+        Map->Doors[I].Pos.X = ReadBufferPopByte(&ReadBuffer);
+        Map->Doors[I].Pos.Y = ReadBufferPopByte(&ReadBuffer);
+        Map->Doors[I].DstPos.X = ReadBufferPopByte(&ReadBuffer);
+        Map->Doors[I].DstPos.Y = ReadBufferPopByte(&ReadBuffer);
+        ReadBufferPopString(&ReadBuffer, Map->Doors[I].Path);
     }
 
     /*ReadTileSet*/
-    int NewDataPathI = RunBufferGetByte(&RunBuffer) % _countof(World->DataPaths); 
+    int NewDataPathI = ReadBufferPopByte(&ReadBuffer) % _countof(World->DataPaths); 
     if(World->DataPathI != NewDataPathI) {
         World->DataPathI = NewDataPathI;
 
@@ -630,11 +874,11 @@ static void ReadMap(world *World, int MapI, const char *Path) {
     }
 
     /*ReadPalleteI*/
-    Map->PalleteI = RunBufferGetByte(&RunBuffer);
+    Map->PalleteI = ReadBufferPopByte(&ReadBuffer);
 }
 
 static void ReadOverworldMap(world *World, int MapI, point Load) {  
-    const char *MapPath = World->MapPaths[Load.Y][Load.X]; 
+    const char *MapPath = World->OverworldMapPaths[Load.Y][Load.X]; 
     if(PointInWorld(Load) && MapPath) {
         const char *CurMapPath = MapPath;
         ReadMap(World, MapI, CurMapPath);
@@ -646,13 +890,50 @@ static void ReadOverworldMap(world *World, int MapI, point Load) {
 static int GetLoadedPoint(world *World, int MapI, const char *MapPath) {
     for(int Y = 0; Y < WORLD_HEIGHT; Y++) {
         for(int X = 0; X < WORLD_WIDTH; X++) {
-            if(World->MapPaths[Y][X] && strcmp(World->MapPaths[Y][X], MapPath) == 0) {
+            if(AreStringsEqual(World->OverworldMapPaths[Y][X], MapPath)) {
                 World->Maps[MapI].Loaded = (point) {X, Y};
                 return 1;
             } 
         }
     }
     return 0;
+}
+
+static void ReadSave(world *World, bag *Bag, int *SaveSec) {
+    read_buffer ReadBuffer = {
+        .Size = ReadAll("Save", ReadBuffer.Data, sizeof(ReadBuffer.Data))
+    };
+    ReadBufferPopObject(&ReadBuffer, &SaveSec, sizeof(*SaveSec)); 
+    Bag->ItemCount = ReadBufferPopByte(&ReadBuffer);
+    for(int I = 0; I < Bag->ItemCount; I++) {
+        Bag->Items[I].ID = ReadBufferPopByte(&ReadBuffer);
+        Bag->Items[I].Count = ReadBufferPopByte(&ReadBuffer);
+    }
+
+    map *CurMap = &World->Maps[World->MapI];
+    map *OthMap = &World->Maps[!World->MapI];
+
+    ReadBufferPopString(&ReadBuffer, CurMap->Path);
+    ReadBufferPopString(&ReadBuffer, OthMap->Path);
+
+    if(CurMap->Path[0]) {
+        ReadMap(World, World->MapI, CurMap->Path);
+        World->IsOverworld = GetLoadedPoint(World, World->MapI, CurMap->Path); 
+    } else {
+        memset(CurMap, 0, sizeof(*CurMap));
+    }
+
+    if(OthMap->Path[0]) {
+        ReadMap(World, !World->MapI, OthMap->Path);
+        World->IsOverworld = GetLoadedPoint(World, !World->MapI, OthMap->Path); 
+    } else {
+        memset(OthMap, 0, sizeof(*OthMap));
+    }
+
+    World->Player.Tile = ReadBufferPopByte(&ReadBuffer) & 0xF0;
+    ReadBufferPopSaveObject(&ReadBuffer, &World->Player);
+    ReadBufferPopSaveObjects(&ReadBuffer, CurMap);
+    ReadBufferPopSaveObjects(&ReadBuffer, OthMap);
 }
 
 /*Object Functions*/
@@ -794,7 +1075,7 @@ static void UpdateAnimation(const object *Object, sprite *SpriteQuad, point Quad
 }
 
 static int ObjectInUpdateBounds(point QuadPt) {
-    return QuadPt.X > -16 && QuadPt.X < 1176 && QuadPt.Y > -16 && QuadPt.Y < 160;
+    return QuadPt.X > -16 && QuadPt.X < 176 && QuadPt.Y > -16 && QuadPt.Y < 160;
 }
 
 /*World Functions*/
@@ -803,7 +1084,7 @@ static int LoadAdjacentMap(world *World, int DeltaX, int DeltaY) {
     point CurMapPt = World->Maps[World->MapI].Loaded;
     if(DeltaX || DeltaY) {
         point NewMapPt = {CurMapPt.X + DeltaX, CurMapPt.Y + DeltaY}; 
-        if(PointInWorld(NewMapPt) && World->MapPaths[NewMapPt.X][NewMapPt.Y] &&
+        if(PointInWorld(NewMapPt) && World->OverworldMapPaths[NewMapPt.X][NewMapPt.Y] &&
            !EqualPoints(World->Maps[!World->MapI].Loaded, NewMapPt)) {
             ReadOverworldMap(World, !World->MapI, NewMapPt);
             Result = 1;
@@ -923,19 +1204,37 @@ static void PlaceTextF(tile_map TileMap, point TileMin, const char *Format, ...)
     PlaceText(TileMap, TileMin, Text);
 }
 
-static void PlaceMenu(tile_map TileMap, int MenuSelectI) {
+/*Menu Functions*/
+static void PlaceMenu(tile_map TileMap, menu *Menu) {
     memset(TileMap, 0, sizeof(tile_map));
-    PlaceTextBox(TileMap, (rect) {10, 0, 20, 14}); 
-    PlaceText(
-        TileMap, 
-        (point) {12, 2}, 
-        "POKÈMON\nITEM\nRED\nSAVE\nOPTION\nEXIT" 
-    ); 
-    TileMap[MenuSelectI * 2 + 2][11] = MT_FULL_HORZ_ARROW;
+    PlaceTextBox(TileMap, Menu->Rect); 
+    PlaceText(TileMap, (point) {Menu->Rect.Left + 2, Menu->Rect.Top + 2}, Menu->Text); 
+    TileMap[Menu->SelectI * 2 + Menu->Rect.Top + 2][Menu->Rect.Left + 1] = MT_FULL_HORZ_ARROW;
 }
 
 static void PlaceOptionCursor(tile_map TileMap, const option *Option, int Tile) {
     TileMap[Option->Y][Option->Xs[Option->I]] = Tile;
+}
+
+static void ChangeOptionX(tile_map TileMap, option *Option, int NewOptionI) {
+    PlaceOptionCursor(TileMap, Option, MT_BLANK);
+    Option->I = NewOptionI;
+    PlaceOptionCursor(TileMap, Option, MT_FULL_HORZ_ARROW);
+}
+
+static void PlaceSave(tile_map TileMap, rect Rect, int SaveSec) {
+    int SaveMin = MinInt(SaveSec / 60, 60 * 59 + 60); 
+    PlaceTextBox(TileMap, Rect);
+    PlaceTextF(
+        TileMap, 
+        (point) {Rect.Left + 1, Rect.Top + 2},
+        "PLAYER %s\nBADGES       %d\nPOKÈDEX    %3d\nTIME     %2d:%02d",
+        "RED",
+        0,
+        0,
+        SaveMin / 60,
+        SaveMin % 60
+    );
 }
 
 static void PlaceBag(tile_map TileMap, const bag *Bag) {
@@ -961,6 +1260,51 @@ static void PlaceBag(tile_map TileMap, const bag *Bag) {
 static game_state RemoveStartMenu(tile_map TileMap) {
     memset(TileMap, 0, sizeof(tile_map));
     return GS_NORMAL; 
+}
+
+static void MoveMenuCursor(tile_map TileMap, menu *Menu, const int *Keys) {
+    if(Keys[VK_UP] == 1 && Menu->SelectI > 0) {
+        TileMap[Menu->SelectI * 2 + Menu->Rect.Top + 2][Menu->Rect.Left + 1] = MT_BLANK;
+        Menu->SelectI--; 
+        TileMap[Menu->SelectI * 2 + Menu->Rect.Top + 2][Menu->Rect.Left + 1] = MT_FULL_HORZ_ARROW;
+    } else if(Keys[VK_DOWN] == 1 && Menu->SelectI < Menu->EndI - 1) {
+        TileMap[Menu->SelectI * 2 + Menu->Rect.Top + 2][Menu->Rect.Left + 1] = MT_BLANK;
+        Menu->SelectI++; 
+        TileMap[Menu->SelectI * 2 + Menu->Rect.Top + 2][Menu->Rect.Left + 1] = MT_FULL_HORZ_ARROW;
+    }
+}
+
+static void MoveMenuCursorWrap(tile_map TileMap, menu *Menu, const int *Keys) { 
+    if(Keys[VK_UP] == 1) {
+        TileMap[Menu->SelectI * 2 + Menu->Rect.Top + 2][Menu->Rect.Left + 1] = MT_BLANK;
+        Menu->SelectI = PosIntMod(Menu->SelectI - 1, Menu->EndI); 
+        TileMap[Menu->SelectI * 2 + Menu->Rect.Top + 2][Menu->Rect.Left + 1] = MT_FULL_HORZ_ARROW;
+    } else if(Keys[VK_DOWN] == 1) {
+        TileMap[Menu->SelectI * 2 + Menu->Rect.Top + 2][Menu->Rect.Left + 1] = MT_BLANK;
+        Menu->SelectI = PosIntMod(Menu->SelectI + 1, Menu->EndI); 
+        TileMap[Menu->SelectI * 2 + Menu->Rect.Top + 2][Menu->Rect.Left + 1] = MT_FULL_HORZ_ARROW;
+    }
+}
+
+static game_state PlaceOptionsMenu(tile_map TileMap, options_menu *Options) {
+    memset(TileMap, MT_BLANK, sizeof(tile_map));
+    PlaceTextBox(TileMap, (rect) {0, 0, 20, 5});
+    PlaceTextBox(TileMap, (rect) {0, 5, 20, 10});
+    PlaceTextBox(TileMap, (rect) {0, 10, 20, 15});
+    PlaceText(
+        TileMap, 
+        (point) {1, 1}, 
+        "TEXT SPEED\n FAST  MEDIUM SLOW\r" 
+        "BATTLE ANIMATION\n ON       OFF\r" 
+        "BATTLE STYLE\n SHIFT    SET\r"
+        " CANCEL"
+    ); 
+    Options->I = 0;
+    PlaceOptionCursor(TileMap, &Options->E[0], MT_FULL_HORZ_ARROW); 
+    for(int I = 1; I < _countof(Options->E); I++) {
+        PlaceOptionCursor(TileMap, &Options->E[I], MT_EMPTY_HORZ_ARROW);
+    }
+    return GS_OPTIONS;
 }
 
 /*Library Functions*/
@@ -1050,7 +1394,7 @@ static HRESULT CreateXAudio2(xaudio2 *XAudio2, const com *Com) {
             "XAudio2_7.dll" 
         },
         .ProcCount = 1,
-        .Procs = (proc []) {{"XAudio2Create"}}
+        .Procs = (proc[]) {{"XAudio2Create"}}
     };
     HRESULT Result = LoadProcsVersioned(&XAudio2->Library, &LibData);
     if(SUCCEEDED(Result)) {
@@ -1105,16 +1449,16 @@ static HRESULT ReadWave(const char *Path, XAUDIO2_BUFFER *Buffer) {
         wave_header Header;
         Result = ReadObject(FileHandle, &Header, sizeof(Header));
         if(SUCCEEDED(Result)) {
-            if(Header.idChunk == 0x46464952 &&
-               Header.idFormat == 0x45564157 &&
-               Header.idSubChunk == 0x20746D66 &&
+            if(Header.idChunk == LE_RIFF &&
+               Header.idFormat == LE_WAVE &&
+               Header.idSubChunk == LE_FMT &&
                Header.wFormatTag == g_WaveFormat.wFormatTag &&
                Header.nChannels == g_WaveFormat.nChannels && 
                Header.nSamplesPerSec == g_WaveFormat.nSamplesPerSec &&
                Header.nBlockAlign == g_WaveFormat.nBlockAlign &&
                Header.nAvgBytesPerSec == g_WaveFormat.nAvgBytesPerSec &&
                Header.wBitsPerSample == g_WaveFormat.wBitsPerSample &&
-               Header.idDataChunk == 0x61746164) {
+               Header.idDataChunk == LE_DATA) {
                 void *DataBuf = HeapAlloc(GetProcessHeap(), 0, Header.cbData);
                 if(DataBuf) {
                     Result = ReadObject(FileHandle, DataBuf, Header.cbData);
@@ -1151,12 +1495,23 @@ static HRESULT PlayWave(IXAudio2SourceVoice *Voice, XAUDIO2_BUFFER *Buffer) {
     return Result;
 }
 
-static int IsVoiceEmpty(IXAudio2SourceVoice *Voice) {
-    int Result = 1;
+static HRESULT PlayMusic(IXAudio2SourceVoice *Voice, XAUDIO2_BUFFER *Buffer) {
+    HRESULT Result = IXAudio2SourceVoice_Stop(Voice, 0, XAUDIO2_COMMIT_NOW);
+    if(SUCCEEDED(Result)) {
+        Result = IXAudio2SourceVoice_FlushSourceBuffers(Voice);
+        if(SUCCEEDED(Result)) {
+            Result = PlayWave(Voice, Buffer);
+        }
+    }
+    return Result;
+}
+
+static int GetQueueCount(IXAudio2SourceVoice *Voice) {
+    int Result = 0;
     if(Voice) {
         XAUDIO2_VOICE_STATE VoiceState;
         IXAudio2SourceVoice_GetState(Voice, &VoiceState, 0);
-        Result = VoiceState.BuffersQueued == 0; 
+        Result = VoiceState.BuffersQueued; 
     }
     return Result;
 }
@@ -1175,12 +1530,70 @@ static HRESULT CreateGenericVoice(IXAudio2 *Engine, IXAudio2SourceVoice **Voice)
 }
 
 /*Win32 Functions*/
+static void SetBitmapForWindow(HWND Window, bitmap *Bitmap) {
+    SetWindowLongPtr(Window, GWLP_USERDATA, (LONG_PTR) Bitmap);
+}
+
+static bitmap *GetBitmapFromWindow(HWND Window) {
+    return (bitmap *) GetWindowLongPtr(Window, GWLP_USERDATA);
+}
+
 static void SetMyWindowPos(HWND Window, DWORD Style, dim_rect Rect) {
     SetWindowLongPtr(Window, GWL_STYLE, Style | WS_VISIBLE);
     SetWindowPos(Window, 
                  HWND_TOP, 
                  Rect.X, Rect.Y, Rect.Width, Rect.Height, 
                  SWP_FRAMECHANGED | SWP_NOREPOSITION);
+}
+
+static void UpdateFullscreen(HWND Window) {
+    dim_rect ClientRect = GetDimClientRect(Window);
+
+    HMONITOR Monitor = MonitorFromWindow(Window, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO MonitorInfo = {
+        .cbSize = sizeof(MonitorInfo)
+    };
+    GetMonitorInfo(Monitor, &MonitorInfo);
+
+    dim_rect MonitorRect = WinToDimRect(MonitorInfo.rcMonitor);
+
+    if(MonitorRect.Width != ClientRect.Width || MonitorRect.Height != ClientRect.Height) {
+        SetMyWindowPos(Window, WS_POPUP, MonitorRect);
+    }
+}
+
+static void PaintFrame(HWND Window, bitmap *Bitmap) {
+    PAINTSTRUCT Paint;
+    HDC DeviceContext = BeginPaint(Window, &Paint);
+    dim_rect ClientRect = GetDimClientRect(Window);
+
+    int RenderWidth = ClientRect.Width - ClientRect.Width % BM_WIDTH;
+    int RenderHeight = ClientRect.Height - ClientRect.Height % BM_HEIGHT;
+
+    int RenderColSize = RenderWidth * BM_HEIGHT;
+    int RenderRowSize = RenderHeight * BM_WIDTH;
+    if(RenderColSize > RenderRowSize) {
+        RenderWidth = RenderRowSize / BM_HEIGHT;
+    } else {
+        RenderHeight = RenderColSize / BM_WIDTH;
+    }
+    int RenderX = (ClientRect.Width - RenderWidth) / 2;
+    int RenderY = (ClientRect.Height - RenderHeight) / 2;
+
+    if(Bitmap) {
+        StretchDIBits(DeviceContext, 
+                      RenderX, RenderY, RenderWidth, RenderHeight,
+                      0, 0, BM_WIDTH, BM_HEIGHT, 
+                      Bitmap->Pixels, Bitmap->Info, 
+                      DIB_RGB_COLORS, SRCCOPY);
+    }
+    PatBlt(DeviceContext, 0, 0, RenderX, ClientRect.Height, BLACKNESS);
+    int RenderRight = RenderX + RenderWidth;
+    PatBlt(DeviceContext, RenderRight, 0, RenderX, ClientRect.Height, BLACKNESS);
+    PatBlt(DeviceContext, RenderX, 0, RenderWidth, RenderY, BLACKNESS);
+    int RenderBottom = RenderY + RenderHeight;
+    PatBlt(DeviceContext, RenderX, RenderBottom, RenderWidth, RenderY + 1, BLACKNESS);
+    EndPaint(Window, &Paint);
 }
 
 static LRESULT CALLBACK WndProc(HWND Window, UINT Message, WPARAM WParam, LPARAM LParam) {
@@ -1192,36 +1605,7 @@ static LRESULT CALLBACK WndProc(HWND Window, UINT Message, WPARAM WParam, LPARAM
         DestroyWindow(Window);
         return 0;
     case WM_PAINT:
-        {
-            /*PaintFrame*/
-            PAINTSTRUCT Paint;
-            HDC DeviceContext = BeginPaint(Window, &Paint);
-            dim_rect ClientRect = GetDimClientRect(Window);
-
-            int RenderWidth = ClientRect.Width - ClientRect.Width % BM_WIDTH;
-            int RenderHeight = ClientRect.Height - ClientRect.Height % BM_HEIGHT;
-
-            int RenderColSize = RenderWidth * BM_HEIGHT;
-            int RenderRowSize = RenderHeight * BM_WIDTH;
-            if(RenderColSize > RenderRowSize) {
-                RenderWidth = RenderRowSize / BM_HEIGHT;
-            } else {
-                RenderHeight = RenderColSize / BM_WIDTH;
-            }
-            int RenderX = (ClientRect.Width - RenderWidth) / 2;
-            int RenderY = (ClientRect.Height - RenderHeight) / 2;
-
-            StretchDIBits(DeviceContext, RenderX, RenderY, RenderWidth, RenderHeight,
-                          0, 0, BM_WIDTH, BM_HEIGHT, g_BmPixels, g_BmInfo, 
-                          DIB_RGB_COLORS, SRCCOPY);
-            PatBlt(DeviceContext, 0, 0, RenderX, ClientRect.Height, BLACKNESS);
-            int RenderRight = RenderX + RenderWidth;
-            PatBlt(DeviceContext, RenderRight, 0, RenderX, ClientRect.Height, BLACKNESS);
-            PatBlt(DeviceContext, RenderX, 0, RenderWidth, RenderY, BLACKNESS);
-            int RenderBottom = RenderY + RenderHeight;
-            PatBlt(DeviceContext, RenderX, RenderBottom, RenderWidth, RenderY + 1, BLACKNESS);
-            EndPaint(Window, &Paint);
-        }
+        PaintFrame(Window, GetBitmapFromWindow(Window));
         return 0;
     }
     return DefWindowProc(Window, Message, WParam, LParam);
@@ -1259,15 +1643,17 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
     };
 
     /*InitBitmap*/
-    g_BmInfo = _alloca(sizeof(BITMAPINFOHEADER) + 4 * sizeof(RGBQUAD));
-    g_BmInfo->bmiHeader = (BITMAPINFOHEADER) {
-        .biSize = sizeof(g_BmInfo->bmiHeader),
+    bitmap Bitmap = {
+        .Info = _alloca(sizeof(Bitmap.Info->bmiHeader) + 4 * sizeof(*Bitmap.Info->bmiColors))
+    };
+    Bitmap.Info->bmiHeader = (BITMAPINFOHEADER) {
+        .biSize = sizeof(Bitmap.Info->bmiHeader),
         .biWidth = BM_WIDTH,
         .biHeight = -BM_HEIGHT,
         .biPlanes = 1,
         .biBitCount = 8,
         .biCompression = BI_RGB,
-        .biClrUsed = 4
+        .biClrUsed = 4 
     };
 
     /*InitWindow*/
@@ -1305,10 +1691,11 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
         MessageBox(NULL, "Failed to register window class", "Error", MB_ICONERROR); 
         return 1;
     }
+    SetBitmapForWindow(Window, &Bitmap);
 
     /*InitXAudio2*/
     HRESULT XAudio2Result = E_FAIL;
-    com Com;
+    com Com = {0};
     xaudio2 XAudio2 = {0};
 
     if(!IsMute) {
@@ -1331,9 +1718,16 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
     XAUDIO2_BUFFER PressBuffer = {0};
     XAUDIO2_BUFFER GoOutside = {0};
     XAUDIO2_BUFFER GoInside = {0}; 
-    XAUDIO2_BUFFER PalleteTownMusic = {0};
+    XAUDIO2_BUFFER SaveSound = {0};
+
+    struct {
+        XAUDIO2_BUFFER Title; 
+        XAUDIO2_BUFFER PalleteTown;
+    } Music; 
+
     IXAudio2SourceVoice *SoundEffectVoice = NULL;
     IXAudio2SourceVoice *MusicVoice = NULL;
+
     if(SUCCEEDED(XAudio2Result)) {
         HRESULT SoundEffectResult = CreateGenericVoice(XAudio2.Engine, &SoundEffectVoice);
         if(SUCCEEDED(SoundEffectResult)) {
@@ -1343,19 +1737,21 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             ReadWave("SFX_PRESS_AB.wav", &PressBuffer);
             ReadWave("SFX_GO_OUTSIDE.wav", &GoOutside);
             ReadWave("SFX_GO_INSIDE.wav", &GoInside);
+            ReadWave("SFX_SAVE.wav", &SaveSound);
         }
  
         HRESULT MusicResult = CreateGenericVoice(XAudio2.Engine, &MusicVoice);
         if(SUCCEEDED(MusicResult)) {
-            ReadWave("03_pallettown.wav", &PalleteTownMusic);
-            PalleteTownMusic.LoopCount = XAUDIO2_LOOP_INFINITE;
-            PlayWave(MusicVoice, &PalleteTownMusic); 
+            ReadWave("01_title.wav", &Music.Title);
+            Music.Title.LoopCount = XAUDIO2_LOOP_INFINITE;
+            ReadWave("03_pallettown.wav", &Music.PalleteTown);
+            Music.PalleteTown.LoopCount = XAUDIO2_LOOP_INFINITE;
         }
     }
 
     /*InitWorld*/
     world World = {
-        .MapPaths = {
+        .OverworldMapPaths = {
             {"VirdianCity"},
             {"Route1"},
             {"PalleteTown"},
@@ -1393,64 +1789,82 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
     ReadTileData("WaterData", WaterData, 7);
     ReadTileData("ShadowData", &SpriteData[255], 1);
 
-    /*InitMaps*/
-    ReadOverworldMap(&World, 0, (point) {0, 2});
-
     /*GameBoyGraphics*/
     sprite Sprites[40] = {0};
 
     tile_map TileMap;
     uint8_t ScrollX = 0;
     uint8_t ScrollY = 0;
-    PlaceViewMap(&World, TileMap, 0);
 
     tile_map WindowMap = {0};
 
     /*InitGameState*/
-    game_state GameState = GS_NORMAL;
-    game_state RestoreState = GS_NORMAL;
+    game_state GameState = GS_MAIN_MENU;
+    game_state RestoreState = GS_MAIN_MENU;
     int TransitionTick = 0;
     point DoorPoint = {0};
 
     /*InitMenuData*/
+    const rect SaveRect = {4, 0, 20, 10};
+
     int IsPauseAttempt = 0;
-    int MenuSelectI = 0;
     int OptionI = 0; 
 
-    enum option_names {
-        OPT_TEXT_SPEED,
-        OPT_BATTLE_ANIMATION, 
-        OPT_BATTLE_STYLE,
-        OPT_CANCEL,
-    };
-
-    option Options[] = {
-        [OPT_TEXT_SPEED] = {
-            .Y = 3,
-            .Xs = {1, 7, 14},
-            .Count = 3
-        },
-        [OPT_BATTLE_ANIMATION] = {
-            .Y = 8,
-            .Xs = {1, 10},
-            .Count = 2
-        },
-        [OPT_BATTLE_STYLE] = {
-            .Y = 13,
-            .Xs = {1, 10},
-            .Count = 2
-        },
-        [OPT_CANCEL] = {
-            .Y = 16,
-            .Xs = {1},
-            .Count = 1
+    options_menu Options = {
+        .E = {
+            [OPT_TEXT_SPEED] = {
+                .Y = 3,
+                .Xs = {1, 7, 14},
+                .Count = 3
+            },
+            [OPT_BATTLE_ANIMATION] = {
+                .Y = 8,
+                .Xs = {1, 10},
+                .Count = 2
+            },
+            [OPT_BATTLE_STYLE] = {
+                .Y = 13,
+                .Xs = {1, 10},
+                .Count = 2
+            },
+            [OPT_CANCEL] = {
+                .Y = 16,
+                .Xs = {1},
+                .Count = 1
+            }
         }
     };
 
     int IsSaveYes = 0;
+    int SaveSec = 0;
+    int StartSaveSec = 0;
+    int IsSaveComplete = 0;
 
-    /*InitBag*/
+    menu StartMenu = {
+        .Text = "POKÈMON\nITEM\nRED\nSAVE\nOPTION\nEXIT", 
+        .Rect = {10, 0, 20, 14},
+        .EndI = 6
+    };
+
     bag Bag = {0};
+
+    /*InitMainMenu*/
+    menu MainMenu = { 
+        .Text = "NEW GAME\nOPTION",
+        .Rect = {0, 0, 15, 6},
+        .EndI = 2
+    };
+    if(GetFileAttributes("Save") != INVALID_FILE_ATTRIBUTES) {
+        MainMenu = (menu) {
+            .Rect = {0, 0, 15, 8},
+            .Text = "CONTINUE\nNEW GAME\nOPTION",
+            .EndI = 3
+        };
+    }
+
+    PlaceMenu(WindowMap, &MainMenu);
+    memcpy(Bitmap.Info->bmiColors, Palletes[0], sizeof(Palletes[0]));
+    PlayWave(MusicVoice, &Music.Title); 
     
     /*InitNonGameState*/
     dim_rect RestoreRect = {0};
@@ -1479,7 +1893,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
     while(!HasQuit) {
         BeginCounter = GetPerfCounter();
 
-        /*ProcessMessage*/
+        /*ProcessMessages*/
         MSG Message;
         while(PeekMessage(&Message, 0, 0, 0, PM_REMOVE)) {
             switch(Message.message) {
@@ -1516,20 +1930,79 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             IsFullscreen ^= 1;
         }
 
-        int SpriteI = 0;
-
         /*UpdatePlayer*/
+        int SpriteI = 0;
         switch(GameState) {
+        case GS_MAIN_MENU:
+            MoveMenuCursor(WindowMap, &MainMenu, Keys);
+            if(Keys['X'] == 1) {
+                switch(MainMenu.EndI - MainMenu.SelectI) {
+                case 3: /*CONTINUE*/
+                    PlaceSave(WindowMap, (rect) {4, 7, 20, 17}, SaveSec); 
+                    GameState = GS_CONTINUE;
+                    break;
+                case 2: /*NEW GAME*/
+                    ReadOverworldMap(&World, 0, (point) {0, 2});
+                    memset(WindowMap, 0, sizeof(WindowMap));
+                    PlaceViewMap(&World, TileMap, 0);
+                    ScrollX = 0;
+                    ScrollY = 0;
+                    GameState = GS_NORMAL;
+                    break;
+                case 1: /*OPTIONS*/
+                    GameState = PlaceOptionsMenu(WindowMap, &Options);
+                    RestoreState = GS_MAIN_MENU;
+                    break;
+                }
+                PlayWave(SoundEffectVoice, &PressBuffer); 
+            }
+            break;
+        case GS_CONTINUE:
+            if(TextTick > 0) {
+                TextTick--;
+                if(RestoreState == GS_NORMAL) {
+                    IXAudio2SourceVoice_SetVolume(
+                        MusicVoice,
+                        (float) TextTick / 60.0f, 
+                        XAUDIO2_COMMIT_NOW
+                    );
+                }
+                if(TextTick == 0) {
+                    switch(RestoreState) {
+                    case GS_NORMAL:
+                        ReadSave(&World, &Bag, &StartSaveSec);
+                        PlaceViewMap(&World, TileMap, 0);
+                        ScrollX = 0;
+                        ScrollY = 0;
+                        IXAudio2SourceVoice_SetVolume(MusicVoice, 1.0f, XAUDIO2_COMMIT_NOW);
+                        PlayMusic(MusicVoice, &Music.PalleteTown); 
+                        break;
+                    default:
+                        PlaceMenu(WindowMap, &MainMenu);
+                        break;
+                    }
+                    GameState = RestoreState;
+                }
+            } else if(Keys['X'] == 1) {
+                TextTick = 60;
+                memset(WindowMap, 0, sizeof(WindowMap));
+                RestoreState = GS_NORMAL;
+            } else if(Keys['Z'] == 1) {
+                TextTick = 30;
+                memset(WindowMap, 0, sizeof(WindowMap));
+                RestoreState = GS_MAIN_MENU;
+            }
+            break;
         case GS_NORMAL:
             /*PlayerUpdate*/
             IsPauseAttempt |= (Keys[VK_RETURN] == 1);
             if(World.Player.Tick == 0) {
                 if(IsPauseAttempt) {
-                    if(IsVoiceEmpty(SoundEffectVoice)) {
+                    if(GetQueueCount(SoundEffectVoice) == 0) {
                         IsPauseAttempt = 0;
                         PlayWave(SoundEffectVoice, &StartMenuBuffer); 
                         GameState = GS_START_MENU;
-                        PlaceMenu(WindowMap, MenuSelectI);
+                        PlaceMenu(WindowMap, &StartMenu);
                     }
                 } else { 
                     int AttemptLeap = 0;
@@ -1678,7 +2151,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                                 DoorPoint = OldQuadInfo.Point;
                                 GameState = GS_TRANSITION;
                                 PlayWave(SoundEffectVoice, &GoOutside);
-                            } else { 
+                            } else if(GetQueueCount(SoundEffectVoice) < 2) {
                                 PlayWave(SoundEffectVoice, &CollisionBuffer);
                             }
                         } else {
@@ -1773,32 +2246,14 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             }
             break;
         case GS_LEAPING:
-            {
-                IsPauseAttempt |= (Keys[VK_RETURN] == 1);
-                /*PlayerUpdateJumpingAnimation*/
-                uint8_t PlayerDeltas[] = {0, 4, 6, 8, 9, 10, 11, 12};
-                uint8_t HalfTick = World.Player.Tick / 2;
-                uint8_t DeltaI = HalfTick < 8 ? HalfTick: 15 - HalfTick;
-                for(int I = 0; I < 4; I++) {
-                    Sprites[I].Y -= PlayerDeltas[DeltaI];
-                }
-
-                /*CreateShadowQuad*/
-                if(HalfTick) {
-                    sprite *ShadowQuad  = &Sprites[SpriteI]; 
-                    ShadowQuad[0] = (sprite) {72, 72, 255, 0};
-                    ShadowQuad[1] = (sprite) {80, 72, 255, SPR_HORZ_FLAG};
-                    ShadowQuad[2] = (sprite) {72, 80, 255, SPR_VERT_FLAG};
-                    ShadowQuad[3] = (sprite) {80, 80, 255, SPR_HORZ_FLAG | SPR_VERT_FLAG};
-                    SpriteI += 4;
-                } else {
-                    GameState = GS_NORMAL;
-                }
-            }
+            IsPauseAttempt |= (Keys[VK_RETURN] == 1);
             break;
         case GS_TEXT:
             if(BoxDelay >= 0) {
                 if(BoxDelay == 0) {
+                    if(IsSaveComplete) {
+                        PlayWave(SoundEffectVoice, &SaveSound);
+                    }
                     PlaceTextBox(WindowMap, (rect) {0, 12, 20, 18});
                     TextTilePt = (point) {1, 14};
                 }
@@ -1859,7 +2314,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                         if(TextTilePt.Y != 18) {
                             /*UseTextSpeed*/
                             if(!Keys['X']) {
-                                TextTick = (uint64_t[]){0, 2, 3}[Options[OPT_TEXT_SPEED].I];
+                                TextTick = (uint64_t[]){0, 2, 3}[Options.E[OPT_TEXT_SPEED].I];
                             }
                         }
                         ActiveText++;
@@ -1875,9 +2330,10 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                     IsSaveYes = 1;
                     break;
                 default:
-                    if(Keys['X'] == 1) {
+                    if(IsSaveComplete || Keys['X'] == 1) {
                         GameState = RestoreState;
                         memset(WindowMap, 0, sizeof(WindowMap));
+                        IsSaveComplete = 0;
                     }
                 }
             }
@@ -1896,16 +2352,16 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                 if(TransitionTick-- > 0) {
                     switch(TransitionTick) {
                     case 24:
-                        g_BmInfo->bmiColors[0] = Palletes[World.Maps[World.MapI].PalleteI][1]; 
-                        g_BmInfo->bmiColors[1] = Palletes[World.Maps[World.MapI].PalleteI][2]; 
-                        g_BmInfo->bmiColors[2] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
+                        Bitmap.Info->bmiColors[0] = Palletes[World.Maps[World.MapI].PalleteI][1]; 
+                        Bitmap.Info->bmiColors[1] = Palletes[World.Maps[World.MapI].PalleteI][2]; 
+                        Bitmap.Info->bmiColors[2] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
                         break;
                     case 16:
-                        g_BmInfo->bmiColors[0] = Palletes[World.Maps[World.MapI].PalleteI][2]; 
-                        g_BmInfo->bmiColors[1] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
+                        Bitmap.Info->bmiColors[0] = Palletes[World.Maps[World.MapI].PalleteI][2]; 
+                        Bitmap.Info->bmiColors[1] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
                         break;
                     case 8:
-                        g_BmInfo->bmiColors[0] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
+                        Bitmap.Info->bmiColors[0] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
                         break;
                     case 0:
                         {
@@ -1913,7 +2369,6 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                             quad_info QuadInfo = GetQuad(&World, DoorPoint); 
 
                             map *OldMap = &World.Maps[QuadInfo.Map]; 
-                            map *NewMap = &World.Maps[!QuadInfo.Map]; 
 
                             door *Door = NULL;
                             for(int I = 0; I < OldMap->DoorCount; I++) {
@@ -1927,10 +2382,9 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                                 const char *NewPath = Door->Path;
                                 ReadMap(&World, !QuadInfo.Map, NewPath);
 
-                                if(!PointInMap(NewMap, Door->DstPos)) {
-                                    Door->DstPos = (point) {0, 0};
-                                }
                                 World.MapI = !QuadInfo.Map;
+
+                                ReadMap(&World, !QuadInfo.Map, NewPath);
                                 World.Player.Pos = QuadPtToPt(Door->DstPos);
                                 World.IsOverworld = GetLoadedPoint(&World, !QuadInfo.Map, NewPath);
 
@@ -1961,20 +2415,11 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                     PlayWave(SoundEffectVoice, &PressBuffer); 
                 }
             } else { 
-                /*MoveMenuCursor*/
-                if(Keys[VK_UP] == 1) {
-                    WindowMap[MenuSelectI * 2 + 2][11] = MT_BLANK;
-                    MenuSelectI = PosIntMod(MenuSelectI - 1, 6); 
-                    WindowMap[MenuSelectI * 2 + 2][11] = MT_FULL_HORZ_ARROW;
-                } else if(Keys[VK_DOWN] == 1) {
-                    WindowMap[MenuSelectI * 2 + 2][11] = MT_BLANK;
-                    MenuSelectI = PosIntMod(MenuSelectI + 1, 6); 
-                    WindowMap[MenuSelectI * 2 + 2][11] = MT_FULL_HORZ_ARROW;
-                }
+                MoveMenuCursorWrap(WindowMap, &StartMenu, Keys);
 
                 /*SelectMenuOption*/
                 if(Keys['X'] == 1) {
-                    switch(MenuSelectI) {
+                    switch(StartMenu.SelectI) {
                     case 0: /*POKÈMON*/
                         break;
                     case 1: /*ITEM*/
@@ -1985,48 +2430,22 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                     case 2: /*RED*/
                         break;
                     case 3: /*SAVE*/
-                        {
-                            int64_t MinutesElapsed = GetDeltaCounter(StartCounter) / PerfFreq / 60;
-                            int64_t MinutesCorrected = MinInt(99 * 60 + 59, MinutesElapsed);
-                            PlaceTextBox(WindowMap, (rect) {4, 0, 20, 10});
-                            PlaceTextF(
-                                WindowMap, 
-                                (point) {5, 2},
-                                "PLAYER %s\nBADGES       %d\nPOKÈDEX    %3d\nTIME     %2d:%02d",
-                                "RED",
-                                0,
-                                0,
-                                MinutesCorrected / 60,
-                                MinutesCorrected % 60
-                            );
+                        SaveSec = (int) MinInt64(
+                            INT_MAX, 
+                            (int64_t) StartSaveSec + GetDeltaCounter(StartCounter) / PerfFreq
+                        );
+                        PlaceSave(WindowMap, SaveRect, SaveSec);
 
-                            TextTick = 4;
-                            BoxDelay = 16; 
-                            ActiveText = "Would you like to\nSAVE the game?";
+                        TextTick = 4;
+                        BoxDelay = 16; 
+                        ActiveText = "Would you like to\nSAVE the game?";
 
-                            GameState = GS_TEXT;
-                            RestoreState = GS_SAVE;
-                        }
+                        GameState = GS_TEXT;
+                        RestoreState = GS_SAVE;
                         break;
-                    case 4: /*OPTION*/
-                        GameState = GS_OPTIONS;
-                        memset(WindowMap, MT_BLANK, sizeof(WindowMap));
-                        PlaceTextBox(WindowMap, (rect) {0, 0, 20, 5});
-                        PlaceTextBox(WindowMap, (rect) {0, 5, 20, 10});
-                        PlaceTextBox(WindowMap, (rect) {0, 10, 20, 15});
-                        PlaceText(
-                            WindowMap, 
-                            (point) {1, 1}, 
-                            "TEXT SPEED\n FAST  MEDIUM SLOW\r" 
-                            "BATTLE ANIMATION\n ON       OFF\r" 
-                            "BATTLE STYLE\n SHIFT    SET\r"
-                            " CANCEL"
-                        ); 
-                        OptionI = 0;
-                        PlaceOptionCursor(WindowMap, &Options[0], MT_FULL_HORZ_ARROW); 
-                        for(int I = 1; I < _countof(Options); I++) {
-                            PlaceOptionCursor(WindowMap, &Options[I], MT_EMPTY_HORZ_ARROW);
-                        }
+                    case 4: /*OPTIONS*/
+                        GameState = PlaceOptionsMenu(WindowMap, &Options);
+                        RestoreState = GS_START_MENU;
                         break;
                     case 5: /*EXIT*/
                         GameState = RemoveStartMenu(WindowMap);
@@ -2040,7 +2459,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             if(Keys['Z'] == 1 || (Keys['X'] == 1 && Bag.ItemSelect == Bag.ItemCount)) {
                 /*RemoveSubMenu*/
                 GameState = GS_START_MENU;
-                PlaceMenu(WindowMap, MenuSelectI);
+                PlaceMenu(WindowMap, &StartMenu);
                 PlayWave(SoundEffectVoice, &PressBuffer); 
             } else {
                 /*MoveTextCursor*/
@@ -2070,7 +2489,33 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             }
             break;
         case GS_SAVE:
-            if(Keys['X'] == 1 || Keys['Z'] == 1) {
+            if(Keys['X'] == 1 && IsSaveYes) {
+                PlayWave(SoundEffectVoice, &PressBuffer); 
+
+                /*RemoveYesNoSavePrompt*/
+                memset(WindowMap, 0, sizeof(WindowMap));
+                PlaceMenu(WindowMap, &StartMenu);
+                PlaceSave(WindowMap, SaveRect, SaveSec);
+                PlaceTextBox(WindowMap, (rect) {0, 12, 20, 18});
+                PlaceText(WindowMap, (point) {1, 14}, "Now saving...");
+
+                if(WriteSave(&World, &Bag, SaveSec)) {
+                    /*ArtificalSaveDelay*/
+                    TextTick = 0;
+                    BoxDelay = 120; 
+                    ActiveText = "RED saved\nthe game!";
+                    GameState = GS_TEXT;
+                    RestoreState = GS_NORMAL;
+                    IsSaveComplete = 1;
+                } else {
+                    /*Error*/
+                    TextTick = 0;
+                    BoxDelay = 60; 
+                    ActiveText = "ERROR:\nWriteSave failed";
+                    GameState = GS_TEXT;
+                    RestoreState = GS_NORMAL;
+                } 
+            } else if(Keys['X'] == 1 || Keys['Z'] == 1) {
                 GameState = RemoveStartMenu(WindowMap);
                 PlayWave(SoundEffectVoice, &PressBuffer); 
             } else if(Keys[VK_UP] == 1) {
@@ -2088,50 +2533,48 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             if(Keys[VK_RETURN] == 1 || Keys['Z'] == 1 ||
                (Keys['X'] == 1 && OptionI == OPT_CANCEL)) {
                 /*RemoveSubMenu*/
-                GameState = GS_START_MENU;
-                PlaceMenu(WindowMap, MenuSelectI);
+                GameState = RestoreState;
+                switch(RestoreState) {
+                case GS_START_MENU:
+                    PlaceMenu(WindowMap, &StartMenu);
+                    break;
+                default:
+                    PlaceMenu(WindowMap, &MainMenu);
+                }
                 PlayWave(SoundEffectVoice, &PressBuffer); 
             } else {
                 /*MoveOptionsCursor*/
                 if(Keys[VK_UP] == 1) {
-                    PlaceOptionCursor(WindowMap, &Options[OptionI], MT_EMPTY_HORZ_ARROW);
-                    OptionI = PosIntMod(OptionI - 1, _countof(Options)); 
-                    PlaceOptionCursor(WindowMap, &Options[OptionI], MT_FULL_HORZ_ARROW);
+                    PlaceOptionCursor(WindowMap, &Options.E[OptionI], MT_EMPTY_HORZ_ARROW);
+                    OptionI = PosIntMod(OptionI - 1, _countof(Options.E)); 
+                    PlaceOptionCursor(WindowMap, &Options.E[OptionI], MT_FULL_HORZ_ARROW);
                 } else if(Keys[VK_LEFT] == 1) {
-                    switch(Options[OptionI].Count) {
+                    switch(Options.E[OptionI].Count) {
                     case 2:
                         /*SwapOptionSelected*/
-                        PlaceOptionCursor(WindowMap, &Options[OptionI], MT_BLANK);
-                        Options[OptionI].I ^= 1;
-                        PlaceOptionCursor(WindowMap, &Options[OptionI], MT_FULL_HORZ_ARROW);
+                        ChangeOptionX(WindowMap, &Options.E[OptionI], Options.E[OptionI].I ^ 1); 
                         break;
                     case 3:
                         /*NextOptionLeft*/
-                        if(Options[OptionI].I > 0) {
-                            PlaceOptionCursor(WindowMap, &Options[OptionI], MT_BLANK);
-                            Options[OptionI].I--;
-                            PlaceOptionCursor(WindowMap, &Options[OptionI], MT_FULL_HORZ_ARROW);
+                        if(Options.E[OptionI].I > 0) {
+                            ChangeOptionX(WindowMap, &Options.E[OptionI], Options.E[OptionI].I - 1); 
                         }
                         break;
                     }
                 } else if(Keys[VK_DOWN] == 1) {
-                    PlaceOptionCursor(WindowMap, &Options[OptionI], MT_EMPTY_HORZ_ARROW);
-                    OptionI = PosIntMod(OptionI + 1, _countof(Options)); 
-                    PlaceOptionCursor(WindowMap, &Options[OptionI], MT_FULL_HORZ_ARROW);
+                    PlaceOptionCursor(WindowMap, &Options.E[OptionI], MT_EMPTY_HORZ_ARROW);
+                    OptionI = PosIntMod(OptionI + 1, _countof(Options.E)); 
+                    PlaceOptionCursor(WindowMap, &Options.E[OptionI], MT_FULL_HORZ_ARROW);
                 } else if(Keys[VK_RIGHT] == 1) {
-                    switch(Options[OptionI].Count) {
+                    switch(Options.E[OptionI].Count) {
                     case 2:
                         /*SwapOptionSelected*/
-                        PlaceOptionCursor(WindowMap, &Options[OptionI], MT_BLANK);
-                        Options[OptionI].I ^= 1;
-                        PlaceOptionCursor(WindowMap, &Options[OptionI], MT_FULL_HORZ_ARROW);
+                        ChangeOptionX(WindowMap, &Options.E[OptionI], Options.E[OptionI].I ^ 1); 
                         break;
                     case 3:
                         /*NextOptionRight*/
-                        if(Options[OptionI].I < 2) {
-                            PlaceOptionCursor(WindowMap, &Options[OptionI], MT_BLANK);
-                            Options[OptionI].I++;
-                            PlaceOptionCursor(WindowMap, &Options[OptionI], MT_FULL_HORZ_ARROW);
+                        if(Options.E[OptionI].I < 2) {
+                            ChangeOptionX(WindowMap, &Options.E[OptionI], Options.E[OptionI].I + 1); 
                         }
                         break;
                     }
@@ -2140,228 +2583,145 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
             break;
         }
 
-        /*UpdatePlayer*/
-        int CanPlayerMove = GameState == GS_NORMAL || 
-                            GameState == GS_LEAPING || 
-                            GameState == GS_TRANSITION;
-        if(CanPlayerMove && World.Player.Tick > 0) {
-            if(World.Player.Tick % 16 == 8) {
-                World.Player.IsRight ^= 1;
-            }
-            if(World.Player.IsMoving && World.Player.Tick % 2 == 0) {
-                switch(World.Player.Dir) {
-                case DIR_UP:
-                    ScrollY -= World.Player.Speed;
-                    break;
-                case DIR_LEFT:
-                    ScrollX -= World.Player.Speed;
-                    break;
-                case DIR_RIGHT:
-                    ScrollX += World.Player.Speed;
-                    break;
-                case DIR_DOWN:
-                    ScrollY += World.Player.Speed;
-                    break;
+        if(GameState != GS_MAIN_MENU && GameState != GS_CONTINUE && GameState != GS_OPTIONS) {
+            /*UpdatePlayer*/
+            int CanPlayerMove = GameState == GS_NORMAL || 
+                                GameState == GS_LEAPING || 
+                                GameState == GS_TRANSITION;
+            if(CanPlayerMove && World.Player.Tick > 0) {
+                if(World.Player.Tick % 16 == 8) {
+                    World.Player.IsRight ^= 1;
                 }
-            }
-            MoveEntity(&World.Player);
-        }
-        sprite *SpriteQuad = &Sprites[SpriteI];
-        UpdateAnimation(&World.Player, SpriteQuad, (point) {72, 72});
-        SpriteI += 4;
-   
-        /*UpdateObjects*/
-        for(int MapI = 0; MapI < _countof(World.Maps); MapI++) {
-            for(int ObjI = 0; ObjI < World.Maps[MapI].ObjectCount; ObjI++) {
-                object *Object = &World.Maps[MapI].Objects[ObjI];
-
-                /*TickFrame*/
-                if(GameState == GS_NORMAL) {
-                    if(Object->Speed == 0) {
-                        if(Object->Tick > 0) {
-                            Object->Tick--; 
-                        } else {
-                            Object->Dir = Object->StartingDir;
-                        }
-                        if(Object->Tick % 16 == 8) {
-                            Object->IsRight ^= 1;
-                        }
-                    } else if(Object->Tick > 0) {
-                        MoveEntity(Object);
-                    } else if(!IsPauseAttempt) {
-                        RandomMove(&World, MapI, Object);
-                    }
-                }
-
-                /*GetObjectRenderPos*/
-                point QuadPt = {
-                    Object->Pos.X - World.Player.Pos.X + 72,
-                    Object->Pos.Y - World.Player.Pos.Y + 72
-                };
-
-                if(World.MapI != MapI) {
-                    switch(GetMapDir(World.Maps, World.MapI)) {
+                if(World.Player.IsMoving && World.Player.Tick % 2 == 0) {
+                    switch(World.Player.Dir) {
                     case DIR_UP:
-                        QuadPt.Y -= World.Maps[MapI].Height * 16;
+                        ScrollY -= World.Player.Speed;
                         break;
                     case DIR_LEFT:
-                        QuadPt.X -= World.Maps[MapI].Width * 16;
-                        break;
-                    case DIR_DOWN:
-                        QuadPt.Y += World.Maps[World.MapI].Height * 16;
+                        ScrollX -= World.Player.Speed;
                         break;
                     case DIR_RIGHT:
-                        QuadPt.X += World.Maps[World.MapI].Width * 16;
+                        ScrollX += World.Player.Speed;
+                        break;
+                    case DIR_DOWN:
+                        ScrollY += World.Player.Speed;
                         break;
                     }
                 }
+                MoveEntity(&World.Player);
+            }
+            sprite *SpriteQuad = &Sprites[SpriteI];
+            UpdateAnimation(&World.Player, SpriteQuad, (point) {72, 72});
+            SpriteI += 4;
 
-                /*RenderObject*/
-                if(ObjectInUpdateBounds(QuadPt) && SpriteI < 40) {
-                    sprite *SpriteQuad = &Sprites[SpriteI];
-                    UpdateAnimation(Object, SpriteQuad, QuadPt);
+            /*UpdateLeaping*/
+            if(GameState == GS_LEAPING) {
+                /*PlayerUpdateJumpingAnimation*/
+                uint8_t PlayerDeltas[] = {0, 4, 6, 8, 9, 10, 11, 12};
+                uint8_t HalfTick = World.Player.Tick / 2;
+                uint8_t DeltaI = HalfTick < 8 ? HalfTick: 15 - HalfTick;
+                for(int I = 0; I < 4; I++) {
+                    Sprites[I].Y -= PlayerDeltas[DeltaI];
+                }
+
+                /*CreateShadowQuad*/
+                if(HalfTick) {
+                    sprite *ShadowQuad  = &Sprites[SpriteI]; 
+                    ShadowQuad[0] = (sprite) {72, 72, 255, 0};
+                    ShadowQuad[1] = (sprite) {80, 72, 255, SPR_HORZ_FLAG};
+                    ShadowQuad[2] = (sprite) {72, 80, 255, SPR_VERT_FLAG};
+                    ShadowQuad[3] = (sprite) {80, 80, 255, SPR_HORZ_FLAG | SPR_VERT_FLAG};
                     SpriteI += 4;
+                } else {
+                    GameState = GS_NORMAL;
                 }
             }
-        }
+       
+            /*UpdateObjects*/
+            for(int MapI = 0; MapI < _countof(World.Maps); MapI++) {
+                for(int ObjI = 0; ObjI < World.Maps[MapI].ObjectCount; ObjI++) {
+                    object *Object = &World.Maps[MapI].Objects[ObjI];
 
-        /*MutTileUpdate*/
-        int TickCycle = Tick / 32 % 9;
-        if(Tick % 16 == 0 && World.IsOverworld) {
-            /*FlowersUpdate*/
-            memcpy(World.TileData[3], FlowerData[TickCycle % 3], TILE_SIZE);
-
-            /*WaterUpdate*/
-            int TickMod = TickCycle < 5 ? TickCycle : 9 - TickCycle;
-            memcpy(World.TileData[20], WaterData[TickMod], TILE_SIZE);
-        }
-
-        /*UpdatePallete*/
-        if(GameState != GS_TRANSITION && World.Player.Tick <= 0) {
-            int PalleteI = World.Maps[World.MapI].PalleteI;
-            memcpy(g_BmInfo->bmiColors, Palletes[PalleteI], sizeof(Palletes[PalleteI]));
-        }
-
-        /*RenderTiles*/
-        uint8_t (*BmRow)[BM_WIDTH] = g_BmPixels;
-        
-        for(int PixelY = 0; PixelY < BM_HEIGHT; PixelY++) {
-            int PixelX = 8 - (ScrollX & 7);
-            int SrcYDsp = ((PixelY + ScrollY) & 7) << 3;
-            int TileX = ScrollX >> 3;
-            int TileY = (PixelY + ScrollY) / 8 % 32;
-            int StartOff = SrcYDsp | (ScrollX & 7);
-            memcpy(*BmRow, &World.TileData[TileMap[TileY][TileX]][StartOff], 8);
-
-            for(int Repeat = 1; Repeat < 20; Repeat++) {
-                TileX = (TileX + 1) % 32;
-                uint8_t *Pixel = *BmRow + PixelX;
-                memcpy(Pixel, &World.TileData[TileMap[TileY][TileX]][SrcYDsp], 8);
-
-                PixelX += 8;
-            }
-            TileX = (TileX + 1) % 32;
-            uint8_t *Pixel = *BmRow + PixelX;
-            int RemainX = BM_WIDTH - PixelX;
-            memcpy(Pixel, &World.TileData[TileMap[TileY][TileX]][SrcYDsp], RemainX);
-            BmRow++;
-        }
-
-        /*RenderSprites*/
-        int MaxX = BM_WIDTH;
-        int MaxY = BM_HEIGHT;
-
-        for(int I = 0; I < SpriteI; I++) {
-            int RowsToRender = 8;
-            if(Sprites[I].Y < 8) {
-                RowsToRender = Sprites[I].Y;
-            } else if(Sprites[I].Y > MaxY) {
-                RowsToRender = MaxInt(MaxY + 8 - Sprites[I].Y, 0);
-            }
-
-            int ColsToRender = 8;
-            if(Sprites[I].X < 8) {
-                ColsToRender = Sprites[I].X;
-            } else if(Sprites[I].X > MaxX) {
-                ColsToRender = MaxInt(MaxX + 8 - Sprites[I].X, 0);
-            }
-
-            int DstX = MaxInt(Sprites[I].X - 8, 0);
-            int DstY = MaxInt(Sprites[I].Y - 8, 0);
-
-            int SrcX = MaxInt(8 - Sprites[I].X, 0);
-            int DispX = 1;
-            if(Sprites[I].Flags & SPR_HORZ_FLAG) {
-                SrcX = MinInt(Sprites[I].X, 7);
-                DispX = -1;
-            }
-            int DispY = 8;
-            int SrcY = MaxInt(8 - Sprites[I].Y, 0);
-            if(Sprites[I].Flags & SPR_VERT_FLAG) {
-                SrcY = MinInt(Sprites[I].Y, 7);
-                DispY = -8;
-            }
-
-            uint8_t *Src = &SpriteData[Sprites[I].Tile][SrcY * TILE_LENGTH + SrcX];
-
-            for(int Y = 0; Y < RowsToRender; Y++) {
-                uint8_t *Tile = Src;
-                for(int X = 0; X < ColsToRender; X++) {
-                    if(*Tile != 2) {
-                        g_BmPixels[Y + DstY][X + DstX] = *Tile;
+                    /*TickFrame*/
+                    if(GameState == GS_NORMAL) {
+                        if(Object->Speed == 0) {
+                            if(Object->Tick > 0) {
+                                Object->Tick--; 
+                            } else {
+                                Object->Dir = Object->StartingDir;
+                            }
+                            if(Object->Tick % 16 == 8) {
+                                Object->IsRight ^= 1;
+                            }
+                        } else if(Object->Tick > 0) {
+                            MoveEntity(Object);
+                        } else if(!IsPauseAttempt) {
+                            RandomMove(&World, MapI, Object);
+                        }
                     }
-                    Tile += DispX;
+
+                    /*GetObjectRenderPos*/
+                    point QuadPt = {
+                        Object->Pos.X - World.Player.Pos.X + 72,
+                        Object->Pos.Y - World.Player.Pos.Y + 72
+                    };
+
+                    if(World.MapI != MapI) {
+                        switch(GetMapDir(World.Maps, World.MapI)) {
+                        case DIR_UP:
+                            QuadPt.Y -= World.Maps[MapI].Height * 16;
+                            break;
+                        case DIR_LEFT:
+                            QuadPt.X -= World.Maps[MapI].Width * 16;
+                            break;
+                        case DIR_DOWN:
+                            QuadPt.Y += World.Maps[World.MapI].Height * 16;
+                            break;
+                        case DIR_RIGHT:
+                            QuadPt.X += World.Maps[World.MapI].Width * 16;
+                            break;
+                        }
+                    }
+
+                    /*RenderObject*/
+                    if(ObjectInUpdateBounds(QuadPt) && SpriteI < 40) {
+                        sprite *SpriteQuad = &Sprites[SpriteI];
+                        UpdateAnimation(Object, SpriteQuad, QuadPt);
+                        SpriteI += 4;
+                    }
                 }
-                Src += DispY;
+            }
+
+            /*MutTileUpdate*/
+            int TickCycle = Tick / 32 % 9;
+            if(Tick % 16 == 0 && World.IsOverworld) {
+                /*FlowersUpdate*/
+                memcpy(World.TileData[3], FlowerData[TickCycle % 3], TILE_SIZE);
+
+                /*WaterUpdate*/
+                int TickMod = TickCycle < 5 ? TickCycle : 9 - TickCycle;
+                memcpy(World.TileData[20], WaterData[TickMod], TILE_SIZE);
+            }
+
+            /*UpdatePallete*/
+            if(GameState != GS_TRANSITION && World.Player.Tick <= 0) {
+                int PalleteI = World.Maps[World.MapI].PalleteI;
+                memcpy(Bitmap.Info->bmiColors, Palletes[PalleteI], sizeof(Palletes[PalleteI]));
             }
         }
 
-        /*RenderWindowTiles*/
-        for(int PixelY = 0; PixelY < BM_HEIGHT; PixelY++) {
-            int PixelX = 0;
-            int SrcYDsp = (PixelY & 7) << 3;
-            int TileY = PixelY / 8;
+        /*Render*/
+        RenderTileMap(Bitmap.Pixels, TileMap, World.TileData, ScrollX, ScrollY);
+        RenderSprites(Bitmap.Pixels, Sprites, SpriteI, SpriteData);
+        RenderWindowMap(Bitmap.Pixels, WindowMap, World.TileData);
 
-            for(int TileX = 0; TileX < 20; TileX++) {
-                if(WindowMap[TileY][TileX]) {
-                    uint8_t *Src = &World.TileData[WindowMap[TileY][TileX]][SrcYDsp];
-                    memcpy(g_BmPixels[PixelY] + PixelX, Src, 8);
-                }
-                PixelX += 8;
-            }
-        }
-
-        /*UpdateFullscreen*/
+        /*RefreshWindowSize*/
         if(IsFullscreen) {
-            dim_rect ClientRect = GetDimClientRect(Window);
-
-            HMONITOR Monitor = MonitorFromWindow(Window, MONITOR_DEFAULTTONEAREST);
-            MONITORINFO MonitorInfo = {
-                .cbSize = sizeof(MonitorInfo)
-            };
-            GetMonitorInfo(Monitor, &MonitorInfo);
-
-            dim_rect MonitorRect = WinToDimRect(MonitorInfo.rcMonitor);
-
-            if(MonitorRect.Width != ClientRect.Width || MonitorRect.Height != ClientRect.Height) {
-                SetMyWindowPos(Window, WS_POPUP, MonitorRect);
-            }
-        }
-
-        /*SleepTillNextFrame*/
-        int64_t InitDeltaCounter = GetDeltaCounter(BeginCounter);
-        if(InitDeltaCounter < FrameDelta) {
-            if(Winmm.IsGranular) {
-                int64_t RemainCounter = FrameDelta - InitDeltaCounter;
-                uint32_t SleepMS = 1000 * RemainCounter / PerfFreq;
-                if(SleepMS > 0) {
-                    Sleep(SleepMS);
-                }
-            }
-            while(GetDeltaCounter(BeginCounter) < FrameDelta);
+            UpdateFullscreen(Window);
         }
 
         /*NextFrame*/
+        SleepTillNextFrame(BeginCounter, FrameDelta, PerfFreq, Winmm.IsGranular);
         InvalidateRect(Window, NULL, 0);
         UpdateWindow(Window);
         Tick++;
