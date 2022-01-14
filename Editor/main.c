@@ -2,15 +2,30 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#define QuadPropSolid   1
-#define QuadPropEdge    2
-#define QuadPropMessage 4
-#define QuadPropWater   8
-#define QuadPropDoor   16
-#define QuadPropExit   32
-#define QuadPropTV     64
-#define QuadPropShelf 128
-#define CountofQuadProp 8
+#define QuadPropNone     0
+#define QuadPropSolid    1
+#define QuadPropEdge     2
+#define QuadPropMessage  3
+#define QuadPropWater    4
+#define QuadPropDoor     5
+#define QuadPropExit     6
+#define QuadPropTV       7
+#define QuadPropShelf    8
+#define QuadPropComputer 9
+#define CountofQuadProp 10
+
+const char g_PropStr[][6] = {
+    "None ",
+    "Solid",
+    "Edge ",
+    "Msg  ",
+    "Water",
+    "Door ",  
+    "Exit ",
+    "TV   ",
+    "Shelf",
+    "Comp "
+};
 
 #define SizeOfQuadProps 128 
 #define SizeOfQuadData 512 
@@ -1178,8 +1193,8 @@ static void UpdateQuadMapArea(quad_context *QuadContext, area_context *AreaConte
     rect QuadRect = {
         .X = AreaContext->QuadMapCam.X,
         .Y = AreaContext->QuadMapCam.Y,
-        .Width = AreaContext->QuadMapArea.Rect.Width / 2,
-        .Height = AreaContext->QuadMapArea.Rect.Height / 2
+        .Width = Min(AreaContext->QuadMapArea.Rect.Width / 2, 16),
+        .Height = Min(AreaContext->QuadMapArea.Rect.Height / 2, 16)
     };
     TranslateQuadsToTiles(g_QuadData, &g_TileMap, &AreaContext->QuadMapArea.Rect, QuadContext->QuadMap, &QuadRect);
 }
@@ -1219,6 +1234,14 @@ static BOOL ResizeQuadMap(quad_context *QuadContext, area_context *AreaContext, 
         UpdateQuadMapArea(QuadContext, AreaContext);
     }
     return ValidDimensions;
+}
+
+static BOOL IsMessageProp(int QuadProp) {
+    return QuadProp == QuadPropMessage || QuadProp == QuadPropTV;
+}
+
+static BOOL IsWarpProp(int QuadProp) {
+    return QuadProp == QuadPropDoor || QuadProp == QuadPropExit;
 }
 
 /**/
@@ -1328,6 +1351,12 @@ static void UpdateNumber(int *Coord, int Char) {
     } 
 } 
 
+static uint8_t *GetCurrentQuadPropPtr(area *Area, uint8_t *QuadProps) {
+    int SetNumber = GetRelativeQuadIndex(Area);
+    uint8_t *PropPtr = QuadProps + SetNumber;
+    return PropPtr;
+}
+
 static BOOL UpdateCommand(command_context *Context, area_context *AreaContext, text *Texts, int Char) {
     BOOL ToRender = TRUE;
     text *Text = GetTextPlace(AreaContext, Texts);
@@ -1368,6 +1397,11 @@ static BOOL UpdateCommand(command_context *Context, area_context *AreaContext, t
         Context->CommandMode = TRUE;
     } else if(Char == 'i' && Text) {
         Context->InsertMode = TRUE;
+    } else if(AreaContext->LockedMode) {
+        uint8_t *Ptr = GetCurrentQuadPropPtr(&AreaContext->QuadDataArea, g_QuadProps);
+        int Val = *Ptr;
+        UpdateNumber(&Val, Char);
+        *Ptr = Val;
     } else {
         ToRender = FALSE;
     }
@@ -1429,12 +1463,6 @@ static LRESULT CALLBACK MyWndProc(HWND Window, UINT Message, WPARAM WParam, LPAR
         Handled = HandleMessages(Window, Message, WParam, LParam, SharedContext);
     }
     return Handled ? 0 : DefWindowProc(Window, Message, WParam, LParam);
-}
-
-static uint8_t *GetCurrentQuadPropPtr(area *Area, uint8_t *QuadProps) {
-    int SetNumber = GetRelativeQuadIndex(Area);
-    uint8_t *PropPtr = QuadProps + SetNumber;
-    return PropPtr;
 }
 
 static void DefaultQuadMap(array_rect *QuadMap) {
@@ -1763,16 +1791,6 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                     }
                 } else if(!CommandContext.InsertMode) {
                     if(CurrentArea == &AreaContext.QuadDataArea && AreaContext.LockedMode) {
-                        switch(Message.wParam) {
-                        case 'J':
-                            PropIndexSelected = (PropIndexSelected + 1) % CountofQuadProp;
-                            RenderContext.ToRender = TRUE;
-                            break;
-                        case 'L':
-                            *GetCurrentQuadPropPtr(CurrentArea, g_QuadProps) ^= (1 << PropIndexSelected);
-                            RenderContext.ToRender = TRUE;
-                            break;
-                        }
                     } else if(CurrentArea == &AreaContext.QuadMapArea) {
                         switch(Message.wParam) {
                         /*Move Camera*/
@@ -1831,7 +1849,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                         RenderContext.ToRender = MoveSelectTile(&AreaContext, CurrentArea, (point) {1, 0}, &QuadMap);
                         break;
                     /*Commands*/
-                    case '0':
+                    case 'Q':
                         AreaContext.LockedMode ^= TRUE;
                         CurrentArea->Cursor = RectTopLeft(&CurrentArea->Rect);
                         CurrentArea = &AreaContext.QuadDataArea;
@@ -1839,7 +1857,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                         NextArea = AreaContext.LockedMode ? &AreaContext.QuadMapArea : &AreaContext.TileDataArea;
                         RenderContext.ToRender = TRUE;
                         break;
-                    case '1':
+                    case 'E':
                         {
                             area *Area = &AreaContext.QuadDataArea;
                             int SetX = (Area->Cursor.X - Area->Rect.X) / 2;
@@ -1849,7 +1867,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                         }
                         RenderContext.ToRender = TRUE;
                         break;
-                    case '2':
+                    case 'R':
                         if(AreaContext.LockedMode) {
                             if(CurrentArea == &AreaContext.QuadDataArea) {
                                 CurrentArea = &AreaContext.SpriteArea; 
@@ -1860,12 +1878,12 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                             }
                         }
                         break;
-                    case '3':
+                    case 'T':
                         g_DataPathI ^= 1;
                         ReadDataPath();
                         RenderContext.ToRender = TRUE;
                         break;
-                    case '4':
+                    case 'Y':
                         g_PalleteNum = (g_PalleteNum + 1) % _countof(g_Palletes);
                         RenderContext.ToRender = TRUE;
                         break;
@@ -1895,13 +1913,13 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                                 point PlacePt = GetPlacePoint(&AreaContext);
                                 uint8_t *PlacePtr = ArrayRectPt(&QuadMap, PlacePt);
                                 if(*PlacePtr != SelectedQuadTile) {
-                                    if((g_QuadProps[*PlacePtr] & (QuadPropMessage | QuadPropTV)) && !(g_QuadProps[SelectedQuadTile] & (QuadPropMessage | QuadPropTV))) {
+                                    if(IsMessageProp(g_QuadProps[*PlacePtr]) & !IsMessageProp(g_QuadProps[SelectedQuadTile])) {
                                         text *Text = FindTextPt(Texts, PlacePt); 
                                         if(Text) {
                                             Text->HasText = FALSE;
                                         }
                                     }
-                                    if((g_QuadProps[*PlacePtr] & (QuadPropDoor | QuadPropExit)) && !(g_QuadProps[SelectedQuadTile] & (QuadPropDoor | QuadPropExit))) {
+                                    if(IsWarpProp(g_QuadProps[*PlacePtr]) & !IsWarpProp(g_QuadProps[SelectedQuadTile])) {
                                         text *Door = FindTextPt(g_Doors, PlacePt); 
                                         if(Door) {
                                             Door->HasText = FALSE;
@@ -1912,14 +1930,14 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                                     uint8_t *Tile = ArrayRectGet(&g_TileMap, CurrentArea->Cursor.X, CurrentArea->Cursor.Y);
                                     FillQuad(&g_TileMap, Tile, g_QuadData + SelectedQuadTile * 4);
 
-                                    if(g_QuadProps[*PlacePtr] & (QuadPropMessage | QuadPropTV)) {
+                                    if(IsMessageProp(g_QuadProps[*PlacePtr])) {
                                         text *Text = AllocText(Texts, PlacePt);
                                         if(!Text) {
                                             CloseCommandContext(&CommandContext, "OOM");
                                         }
                                     }
                                     
-                                    if(g_QuadProps[*PlacePtr] & (QuadPropDoor | QuadPropExit)) {
+                                    if(IsWarpProp(g_QuadProps[*PlacePtr])) {
                                         text *Door = AllocDoor(PlacePt);
                                         if(!Door) {
                                             CloseCommandContext(&CommandContext, "OOM");
@@ -1931,7 +1949,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                                 /*PlaceObject*/
                                 int SpriteSetI = (NextArea->Cursor.X - NextArea->Rect.X) / 2;
                                 point Place = GetPlacePoint(&AreaContext);
-                                if(GetQuadProp(&QuadMap, g_QuadProps, Place) != 0) {
+                                if(GetQuadProp(&QuadMap, g_QuadProps, Place) != QuadPropNone) {
                                     CloseCommandContext(&CommandContext, "ERR: Invalid position");
                                 } else {
                                     object *Object = AllocObject(Place, SpriteSetI * 16, DirDown);
@@ -1989,11 +2007,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                         QuadMap.Width, QuadMap.Height, Place.X, Place.Y);
             } else if(CurrentArea == &AreaContext.QuadDataArea && AreaContext.LockedMode) {
                 int Prop = *GetCurrentQuadPropPtr(CurrentArea, g_QuadProps);
-                PlaceFormattedText(&g_TileMap, &AreaContext.TextArea.Rect, 
-                        "Solid %d" "\n" "Edge  %d" "\n" "Msg   %d" "\n" "Water %d" "\n" 
-                        "Door  %d" "\n" "Exit  %d" "\n" "TV    %d" "\n" "Shelf %d" "\n", 
-                        !!(Prop & QuadPropSolid), !!(Prop & QuadPropEdge), !!(Prop & QuadPropMessage), !!(Prop & QuadPropWater), 
-                        !!(Prop & QuadPropDoor), !!(Prop & QuadPropExit), !!(Prop & QuadPropTV), !!(Prop & QuadPropShelf));
+                PlaceFormattedText(&g_TileMap, &AreaContext.TextArea.Rect, "%s %d", Prop < _countof(g_PropStr) ? g_PropStr[Prop] : "TBD  ", Prop);
             } else {
                 PlaceChars(&g_TileMap, &AreaContext.TextArea.Rect, "", FALSE);
             }
@@ -2075,10 +2089,6 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                 int Length = AreaContext.LockedMode ? 16 : 8;
                 RenderSelect(&RenderContext.Bitmap.Pixels, ColorIndexActive, CurrentArea->Cursor, Length, Length);
                 RenderSelect(&RenderContext.Bitmap.Pixels, ColorIndexInactive, NextArea->Cursor, Length, Length);
-            }
-            if(CurrentArea == &AreaContext.QuadDataArea && AreaContext.LockedMode) {
-                point SelectPoint = (point) {AreaContext.TextArea.Rect.X + 6, AreaContext.TextArea.Rect.Y + PropIndexSelected};
-                RenderSelect(&RenderContext.Bitmap.Pixels, ColorIndexActive, SelectPoint, 8, 8);
             }
             InvalidateRect(Window, NULL, FALSE);
             RenderContext.ToRender = FALSE;
