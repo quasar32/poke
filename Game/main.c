@@ -102,7 +102,9 @@ typedef enum game_state {
     GS_SAVE,
     GS_OPTIONS,
 
-    GS_USE_ITEM,
+    GS_USE_TOSS,
+    GS_TOSS,
+    GS_CONFIRM_TOSS,
 
     /*RedPC*/
     GS_RED_PC
@@ -352,6 +354,7 @@ typedef struct options_menu {
 
 typedef struct active_text {
     const char *Str;
+    const char *Restore;
     uint64_t Tick;
     point TilePt; 
     int BoxDelay;
@@ -416,6 +419,15 @@ static int CorrectTileCoord(int TileCoord) {
 }
 
 /*String Functions*/
+static int DoesStartStringMatch(const char *Dst, const char *Src) {
+    for(int I = 0; Src[I] != '\0'; I++) {
+        if(Dst[I] != Src[I]) {
+            return 0;
+        }
+    }
+    return 1; 
+}
+
 static int AreStringsEqual(const char *A, const char *B) {
     return A && B ? strcmp(A, B) == 0 : A != B;
 }
@@ -1424,27 +1436,51 @@ static game_state PlaceOptionsMenu(tile_map TileMap, options_menu *Options) {
 }
 
 /*Inventory Functions*/
-static item RemoveItem(inventory *Inventory) {
-    item Item = Inventory->Items[Inventory->ItemSelect];
-    Inventory->ItemCount--;
-    for(int I = Inventory->ItemSelect; I < Inventory->ItemCount; I++) {
-        Inventory->Items[I] = Inventory->Items[I + 1]; 
+static item RemoveItem(inventory *Inventory, int TossCount) {
+    item *SelectedItem = &Inventory->Items[Inventory->ItemSelect]; 
+    item RetItem = *SelectedItem;
+    if(TossCount < SelectedItem->Count) { 
+        SelectedItem->Count -= TossCount;
+        RetItem.Count = TossCount;
+    } else {
+        Inventory->ItemCount--;
+        for(int I = Inventory->ItemSelect; I < Inventory->ItemCount; I++) {
+            Inventory->Items[I] = Inventory->Items[I + 1]; 
+        }
+        Inventory->ItemSelect = MinInt(Inventory->ItemSelect, Inventory->ItemCount);
     }
-    Inventory->ItemSelect = MinInt(Inventory->ItemSelect, Inventory->ItemCount);
-    return Item;
+    return RetItem;
+}
+
+static int FindItem(const inventory *Inventory, int ID) {
+    for(int I = 0; I < Inventory->ItemCount; I++) {
+        if(Inventory->Items[I].ID == ID) { 
+            return I;
+        }
+    }
+    return -1;
 }
 
 static void AddItem(inventory *Inventory, item Item) {
-    if(Inventory->ItemCount < Inventory->ItemCapacity) {
+    int ExistingItemI = FindItem(Inventory, Item.ID); 
+    if(ExistingItemI >= 0 && Inventory->Items[ExistingItemI].Count + Item.Count < 100) {
+        Inventory->Items[ExistingItemI].Count += Item.Count;
+    } else if(Inventory->ItemCount < Inventory->ItemCapacity) {
         Inventory->Items[Inventory->ItemCount++] = Item;
     } 
 }
 
 static void MoveItem(inventory *Dest, inventory *Src) {
     if(Dest->ItemCount < Dest->ItemCapacity) {
-        AddItem(Dest, RemoveItem(Src));
+        AddItem(Dest, RemoveItem(Src, 1));
     }
 } 
+
+static int PlaceTossCount(tile_map TileMap, const inventory *Inventory, int TossCount) {
+    TossCount = PosIntMod(TossCount - 1, Inventory->Items[Inventory->ItemSelect].Count) + 1; 
+    PlaceTextF(TileMap, (point) {16, 10}, "*%02d", TossCount);
+    return TossCount;
+}
 
 /*Library Functions*/
 static HRESULT LoadProc(lib_struct *Struct, const char *Name, const char **ProcNames, int ProcCount) {
@@ -2043,6 +2079,12 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
         .TextY = 11,
         .EndI = 2
     };
+    menu ConfirmTossMenu = {
+        .Text = "YES\nNO",
+        .Rect = {14, 7, 6, 12},
+        .TextY = 8,
+        .EndI = 2
+    };
 
     /*InitInventory*/
     inventory Bag = {
@@ -2055,7 +2097,9 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
         .ItemCount = 1 
     };
     inventory_state InventoryState = IS_ITEM;
-    inventory *Inventory = NULL;
+    inventory *Inventory = &Bag;
+
+    int TossCount = 1;
 
     /*InitMainMenu*/
     menu MainMenu = { 
@@ -2515,95 +2559,130 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                     ActiveText.TilePt = (point) {1, 14};
                 }
                 ActiveText.BoxDelay--;
-            } else if(ActiveText.Str[0]) {
-                switch(ActiveText.TilePt.Y) {
-                case 17:
-                    /*MoreTextDisplay*/
-                    if(ActiveText.Tick > 0) {
-                        ActiveText.Tick--;
-                    } else switch(ActiveText.Str[-1]) {
-                    case '\n':
-                        memcpy(&WindowMap[14][1], &WindowMap[15][1], 17);
-                        memset(&WindowMap[13][1], MT_BLANK, 17);
-                        memset(&WindowMap[15][1], MT_BLANK, 17);
-                        ActiveText.TilePt.Y = 16;
-                        break;
-                    case '\f':
-                        ActiveText.TilePt.Y = 14;
-                        break;
-                    }
-                    break;
-                case 18:
-                    /*MoreTextWait*/
-                    WindowMap[16][18] = ActiveText.Tick / 30 % 2 ? MT_BLANK : 171;
-                    if(VirtButtons[BT_A] == 1 || VirtButtons[BT_B] == 1) {
-                        if(ActiveText.IsImmediate) {
-                            GameState = GS_RED_PC;
-                            RedPCMenu.SelectI = 0;
-                            PlaceMenu(WindowMap, &RedPCMenu);
-                            PlaceStaticText(WindowMap, "What do you want\nto do?");
-                            PlayWave(SoundEffectVoice, &SoundEffectPressAB); 
-                        } else {
-                            if(ActiveText.Str[-1] == '\n') {
-                                memcpy(&WindowMap[13][1], &WindowMap[14][1], 17);
-                                memcpy(&WindowMap[15][1], &WindowMap[16][1], 17);
-                            }
-                            memset(&WindowMap[14][1], MT_BLANK, 17);
-                            memset(&WindowMap[16][1], MT_BLANK, 18);
-                            ActiveText.TilePt.Y = 17;
-                            ActiveText.Tick = 8;
-                            PlayWave(SoundEffectVoice, &SoundEffectPressAB); 
-                        }
-                    } else {
-                        ActiveText.Tick++;
-                    }
-                    break;
-                default:
-                    /*UpdateTextForNextChar*/
-                    if(ActiveText.Tick > 0) {
-                        ActiveText.Tick--;
-                    } else if(ActiveText.IsImmediate) {
-                        PlaceText(WindowMap, (point) {1, 14}, "RED turned on\nthe PC.");
-                        ActiveText.TilePt.Y = 18;
-                    } else {
-                        switch(ActiveText.Str[0]) {
+            } else { 
+                if(!ActiveText.Str[0] && ActiveText.Restore) {
+                    ActiveText.Str = ActiveText.Restore;
+                    ActiveText.Restore = NULL;
+                }
+                if(ActiveText.Str[0]) {
+                    switch(ActiveText.TilePt.Y) {
+                    case 17:
+                        /*MoreTextDisplay*/
+                        if(ActiveText.Tick > 0) {
+                            ActiveText.Tick--;
+                        } else switch(ActiveText.Str[-1]) {
                         case '\n':
-                            ActiveText.TilePt.X = 1;
-                            ActiveText.TilePt.Y += 2;
+                            memcpy(&WindowMap[14][1], &WindowMap[15][1], 17);
+                            memset(&WindowMap[13][1], MT_BLANK, 17);
+                            memset(&WindowMap[15][1], MT_BLANK, 17);
+                            ActiveText.TilePt.Y = 16;
                             break;
                         case '\f':
-                            ActiveText.TilePt.X = 1;
-                            ActiveText.TilePt.Y = 18;
+                            ActiveText.TilePt.Y = 14;
                             break;
-                        default:
-                            WindowMap[ActiveText.TilePt.Y][ActiveText.TilePt.X] = 
-                                CharToTile(*ActiveText.Str);
-                            ActiveText.TilePt.X++;
                         }
-                        if(ActiveText.TilePt.Y != 18) {
-                            /*UseTextSpeed*/
-                            if(!VirtButtons[BT_A]) {
-                                ActiveText.Tick = (uint64_t[]){0, 2, 3}[Options.E[OPT_TEXT_SPEED].I];
+                        break;
+                    case 18:
+                        /*MoreTextWait*/
+                        WindowMap[16][18] = ActiveText.Tick / 30 % 2 ? MT_BLANK : 171;
+                        if(VirtButtons[BT_A] == 1 || VirtButtons[BT_B] == 1) {
+                            if(ActiveText.IsImmediate) {
+                                GameState = GS_RED_PC;
+                                RedPCMenu.SelectI = 0;
+                                PlaceMenu(WindowMap, &RedPCMenu);
+                                PlaceStaticText(WindowMap, "What do you want\nto do?");
+                                PlayWave(SoundEffectVoice, &SoundEffectPressAB); 
+                            } else {
+                                if(ActiveText.Str[-1] == '\n') {
+                                    memcpy(&WindowMap[13][1], &WindowMap[14][1], 17);
+                                    memcpy(&WindowMap[15][1], &WindowMap[16][1], 17);
+                                }
+                                memset(&WindowMap[14][1], MT_BLANK, 17);
+                                memset(&WindowMap[16][1], MT_BLANK, 18);
+                                ActiveText.TilePt.Y = 17;
+                                ActiveText.Tick = 8;
+                                PlayWave(SoundEffectVoice, &SoundEffectPressAB); 
+                            }
+                        } else {
+                            ActiveText.Tick++;
+                        }
+                        break;
+                    default:
+                        /*UpdateTextForNextChar*/
+                        if(ActiveText.Tick > 0) {
+                            ActiveText.Tick--;
+                        } else if(ActiveText.IsImmediate) {
+                            PlaceText(WindowMap, (point) {1, 14}, "RED turned on\nthe PC.");
+                            ActiveText.TilePt.Y = 18;
+                        } else {
+                            if(ActiveText.Str[0] == '[') {
+                                ActiveText.Restore = ActiveText.Str;
+                                if(DoesStartStringMatch(ActiveText.Str, "[ITEM]")) {
+                                    ActiveText.Restore += sizeof("[ITEM]") - 1;
+                                    ActiveText.Str = Inventory->ItemSelect < Inventory->ItemCount ?
+                                                        g_ItemNames[
+                                                            Inventory->Items[Inventory->ItemSelect].ID
+                                                        ]:
+                                                        "???????";
+                                } else {
+                                    ActiveText.Restore++;
+                                    ActiveText.Str = "???";
+                                }
+                            }
+                            switch(ActiveText.Str[0]) {
+                            case '\n':
+                                ActiveText.TilePt.X = 1;
+                                ActiveText.TilePt.Y += 2;
+                                ActiveText.Str++;
+                                break;
+                            case '\f':
+                                ActiveText.TilePt.X = 1;
+                                ActiveText.TilePt.Y = 18;
+                                ActiveText.Str++;
+                                break;
+                            default:
+                                WindowMap[ActiveText.TilePt.Y][ActiveText.TilePt.X] = 
+                                    CharToTile(*ActiveText.Str);
+                                if(ActiveText.TilePt.X < 20) {
+                                    ActiveText.TilePt.X++;
+                                    ActiveText.Str++;
+                                } else {
+                                    ActiveText.Str = "";
+                                }
+                            }
+                            if(ActiveText.TilePt.Y != 18) {
+                                /*UseTextSpeed*/
+                                if(!VirtButtons[BT_A]) {
+                                    ActiveText.Tick = (uint64_t[]){0, 2, 3}[Options.E[OPT_TEXT_SPEED].I];
+                                }
                             }
                         }
-                        ActiveText.Str++;
                     }
-                }
-            } else {
-                switch(RestoreState) {
-                case GS_SAVE:
-                    GameState = RestoreState;
-                    YesNoMenu.SelectI = 0;
-                    PlaceMenu(WindowMap, &YesNoMenu);
-                    break;
-                case GS_RED_PC:
-                    GameState = RestoreState;
-                    break;
-                default:
-                    if(IsSaveComplete || VirtButtons[BT_A] == 1) {
+                } else {
+                    switch(RestoreState) {
+                    case GS_SAVE:
                         GameState = RestoreState;
-                        memset(WindowMap, 0, sizeof(WindowMap));
-                        IsSaveComplete = 0;
+                        YesNoMenu.SelectI = 0;
+                        PlaceMenu(WindowMap, &YesNoMenu);
+                        break;
+                    case GS_RED_PC:
+                        GameState = RestoreState;
+                        break;
+                    case GS_CONFIRM_TOSS:
+                        WindowMap[16][18] = ActiveText.Tick / 30 % 2 ? MT_BLANK : 171;
+                        ActiveText.Tick++;
+                        if(VirtButtons[BT_A] == 1) {
+                            GameState = RestoreState;
+                            PlaceMenu(WindowMap, &ConfirmTossMenu);
+                            PlayWave(SoundEffectVoice, &SoundEffectPressAB);
+                        }
+                        break;
+                    default:
+                        if(IsSaveComplete || VirtButtons[BT_A] == 1) {
+                            GameState = RestoreState;
+                            memset(WindowMap, 0, sizeof(WindowMap));
+                            IsSaveComplete = 0;
+                        }
                     }
                 }
             }
@@ -2744,9 +2823,9 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                     switch(InventoryState) {
                     case IS_ITEM:
                         WindowMap[Inventory->Y * 2 + 4][5] = MT_EMPTY_HORZ_ARROW;
-                        YesNoMenu.SelectI = 0;
+                        UseTossMenu.SelectI = 0;
                         PlaceMenu(WindowMap, &UseTossMenu);
-                        GameState = GS_USE_ITEM;
+                        GameState = GS_USE_TOSS;
                         break;
                     case IS_WITHDRAW: 
                         MoveItem(&Bag, &RedPC);
@@ -2867,20 +2946,68 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE Prev, LPSTR CmdLine, int CmdSho
                 }
             }
             break;
-        case GS_USE_ITEM:
+        case GS_USE_TOSS:
             MoveMenuCursor(WindowMap, &UseTossMenu, VirtButtons);
-            if(VirtButtons[BT_A]) {
+            if(VirtButtons[BT_A] == 1) {
                 if(UseTossMenu.SelectI == 0) {
                     ActiveText = (active_text) {
                        .Str = "ERROR: TODO" 
                     };
                     RestoreState = GS_NORMAL;
+                    GameState = GS_TEXT;
                 } else {
+                    PlaceMenuCursor(WindowMap, &UseTossMenu, MT_EMPTY_HORZ_ARROW);
+                    PlaceTextBox(WindowMap, (rect) {15, 9, 20, 12});
+                    TossCount = PlaceTossCount(WindowMap, Inventory, 1); 
+                    GameState = GS_TOSS;
+                }
+                PlayWave(SoundEffectVoice, &SoundEffectPressAB);
+            } else if(VirtButtons[BT_B] == 1) {
+                PlaceMenu(WindowMap, &StartMenu); 
+                PlaceInventory(WindowMap, Inventory);
+                PlayWave(SoundEffectVoice, &SoundEffectPressAB);
+                GameState = GS_ITEM;
+            }
+            break;
+        case GS_TOSS:
+            /*
                     RemoveItem(Inventory); 
                     PlaceMenu(WindowMap, &StartMenu); 
                     PlaceInventory(WindowMap, Inventory);
-                }
-            } else if(VirtButtons[BT_B]) {
+                    GameState = GS_ITEM;
+            */
+            if(VirtButtons[BT_UP] == 1) {
+                TossCount = PlaceTossCount(WindowMap, Inventory, TossCount + 1); 
+            } else if(VirtButtons[BT_DOWN] == 1) {
+                TossCount = PlaceTossCount(WindowMap, Inventory, TossCount - 1); 
+            } 
+            if(VirtButtons[BT_A] == 1) {
+                ActiveText = (active_text) {
+                    .Str = "Is it OK to toss\n[ITEM]?"
+                };
+                /*
+                RemoveItem(Inventory, TossCount); 
+                PlaceMenu(WindowMap, &StartMenu); 
+                PlaceInventory(WindowMap, Inventory);
+                GameState = GS_ITEM;
+                */
+                PlayWave(SoundEffectVoice, &SoundEffectPressAB);
+                GameState = GS_TEXT;
+                RestoreState = GS_CONFIRM_TOSS;
+            } else if(VirtButtons[BT_B] == 1) {
+                PlaceMenu(WindowMap, &StartMenu); 
+                PlaceInventory(WindowMap, Inventory);
+                PlayWave(SoundEffectVoice, &SoundEffectPressAB);
+                GameState = GS_ITEM;
+            }
+            break;
+        case GS_CONFIRM_TOSS:
+            MoveMenuCursor(WindowMap, &ConfirmTossMenu, VirtButtons);
+            if(VirtButtons[BT_A] == 1) {
+                PlayWave(SoundEffectVoice, &SoundEffectPressAB);
+            } else if(VirtButtons[BT_B] == 1) {
+                GameState = GS_ITEM;
+                PlayWave(SoundEffectVoice, &SoundEffectPressAB);
                 PlaceMenu(WindowMap, &StartMenu); 
                 PlaceInventory(WindowMap, Inventory);
                 PlayWave(SoundEffectVoice, &SoundEffectPressAB);
