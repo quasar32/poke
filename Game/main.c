@@ -12,15 +12,16 @@
 #include "frame.h"
 #include "inventory.h"
 #include "input.h"
+#include "options.h"
 #include "procs.h"
 #include "scalar.h"
-#include "menu.h"
 #include "read_buffer.h"
 #include "window_map.h"
 #include "world.h"
 #include "write_buffer.h"
 #include "read.h"
 #include "render.h"
+#include "save.h"
 #include "state.h"
 
 /*Macro Strings*/
@@ -42,7 +43,6 @@ static const rect SaveRect = {4, 0, 20, 10};
 static int IsSaveComplete;
 
 static int IsPauseAttempt;
-static int OptionI; 
 
 static world World;
 static uint8_t ScrollX;
@@ -56,9 +56,6 @@ static uint8_t WaterData[7][64];
 
 static int64_t Tick;
 static int64_t StartCounter;
-
-static window_task *DeferedTask;
-static const char *DeferedMessage;
 
 static const RGBQUAD Palletes[256][4] = {
     {
@@ -114,100 +111,6 @@ static point GetFacingPoint(point Pos, int Dir) {
     return AddPoints(OldPoint, DirPoint);
 }
 
-/*Quad Functions*/
-static BOOL WriteAll(LPCSTR Path, LPCVOID Data, DWORD Size) {
-    BOOL Success = FALSE;
-    HANDLE FileHandle = CreateFile(
-        Path,
-        GENERIC_WRITE,
-        FILE_SHARE_READ,
-        NULL,
-        CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL
-    ); 
-    if(FileHandle != INVALID_HANDLE_VALUE) {
-        DWORD BytesWritten;
-        WriteFile(FileHandle, Data, Size, &BytesWritten, NULL);
-        if(BytesWritten == Size) {
-            Success = TRUE;
-        }
-        CloseHandle(FileHandle);
-    }
-    return Success;
-}
-
-static BOOL WriteSaveHeader(void) {
-    write_buffer WriteBuffer = {0};
-    WriteBufferPushObject(&WriteBuffer, &SaveSec, sizeof(SaveSec));
-    return WriteAll("SaveHeader", WriteBuffer.Data, WriteBuffer.Index);
-}
-
-static void ReadSaveHeader(void) {
-    read_buffer ReadBuffer = {
-        .Size = ReadAll("SaveHeader", ReadBuffer.Data, sizeof(ReadBuffer.Data))
-    };
-    ReadBufferPopObject(&ReadBuffer, &SaveSec, sizeof(SaveSec)); 
-    StartSaveSec = SaveSec;
-}
-
-static BOOL WriteSave(const world *World) {
-    write_buffer WriteBuffer = {0};
-    WriteInventory(&WriteBuffer, &Bag);
-    WriteInventory(&WriteBuffer, &RedPC);
-
-    const map *CurMap = &World->Maps[World->MapI];
-    const map *OthMap = &World->Maps[!World->MapI];
-
-    WriteBufferPushString(&WriteBuffer, CurMap->Path, CurMap->PathLen);
-    WriteBufferPushString(&WriteBuffer, OthMap->Path, OthMap->PathLen);
-
-    WriteBufferPushByte(&WriteBuffer, World->Player.Tile);
-    WriteBufferPushSaveObject(&WriteBuffer, &World->Player);
-    WriteBufferPushSaveObjects(&WriteBuffer, CurMap);
-    WriteBufferPushSaveObjects(&WriteBuffer, OthMap);
-    WriteBufferPushByte(&WriteBuffer, MusicI[World->MapI]);
-    WriteBufferPushByte(&WriteBuffer, MusicI[!World->MapI]);
-
-    return WriteAll("Save", WriteBuffer.Data, WriteBuffer.Index);
-}
-
-/*Read Functions*/
-static void ReadSave(world *World) {
-    read_buffer ReadBuffer = {
-        .Size = ReadAll("Save", ReadBuffer.Data, sizeof(ReadBuffer.Data))
-    };
-    ReadBufferPopInventory(&ReadBuffer, &Bag);
-    ReadBufferPopInventory(&ReadBuffer, &RedPC);
-
-    map *CurMap = &World->Maps[World->MapI];
-    map *OthMap = &World->Maps[!World->MapI];
-
-    ReadBufferPopString(&ReadBuffer, CurMap->Path);
-    ReadBufferPopString(&ReadBuffer, OthMap->Path);
-
-    if(CurMap->Path[0]) {
-        ReadMap(World, World->MapI, CurMap->Path);
-        GetLoadedPoint(World, World->MapI, CurMap->Path); 
-    } else {
-        memset(CurMap, 0, sizeof(*CurMap));
-    }
-
-    if(OthMap->Path[0]) {
-        ReadMap(World, !World->MapI, OthMap->Path);
-        GetLoadedPoint(World, !World->MapI, OthMap->Path); 
-    } else {
-        memset(OthMap, 0, sizeof(*OthMap));
-    }
-
-    World->Player.Tile = ReadBufferPopByte(&ReadBuffer) & 0xF0;
-    ReadBufferPopSaveObject(&ReadBuffer, &World->Player);
-    ReadBufferPopSaveObjects(&ReadBuffer, CurMap);
-    ReadBufferPopSaveObjects(&ReadBuffer, OthMap);
-    MusicI[0] = ReadBufferPopByte(&ReadBuffer); 
-    MusicI[1] = ReadBufferPopByte(&ReadBuffer); 
-}
-
 /*Misc Functions*/
 static int IsPressABWithSound(void) {
     int ABIsPressed = VirtButtons[BT_A] == 1 || VirtButtons[BT_B] == 1;
@@ -242,6 +145,31 @@ void GS_RED_PC_REPEAT_INTRO(void);
 
 void GS_REMOVE_WINDOW_TASK(void);
 void GS_PUSH_WINDOW_TASK(void);
+
+void UpdatePlayerMovement(void) {
+    if(World.Player.Tick > 0) {
+        if(World.Player.Tick % 16 == 8) {
+            World.Player.IsRight ^= 1;
+        }
+        if(World.Player.IsMoving && World.Player.Tick % 2 == 0) {
+            switch(World.Player.Dir) {
+            case DIR_UP:
+                ScrollY -= World.Player.Speed;
+                break;
+            case DIR_LEFT:
+                ScrollX -= World.Player.Speed;
+                break;
+            case DIR_RIGHT:
+                ScrollX += World.Player.Speed;
+                break;
+            case DIR_DOWN:
+                ScrollY += World.Player.Speed;
+                break;
+            }
+        }
+        MoveEntity(&World.Player);
+    }
+}
 
 void GS_MAIN_MENU(void) {
     menu *CurrentMenu = GET_TOP_WINDOW_TASK(menu); 
@@ -554,10 +482,12 @@ void GS_NORMAL(void) {
             }
         }
     }
+    UpdatePlayerMovement();
 }
 
 void GS_LEAPING(void) {
     IsPauseAttempt |= (VirtButtons[BT_START] == 1);
+    UpdatePlayerMovement();
 }
 
 void GS_TEXT(void) {
@@ -598,7 +528,7 @@ void GS_TEXT(void) {
                 break;
             case 18:
                 /*MoreTextWait*/
-                if(IsPressABWithSound()) {
+                if(VirtButtons[BT_A] == 1 || VirtButtons[BT_B] == 1) {
                     if(ActiveText.Str[-1] == '\n') {
                         memcpy(&WindowMap[13][1], &WindowMap[14][1], 17);
                         memcpy(&WindowMap[15][1], &WindowMap[16][1], 17);
@@ -607,6 +537,7 @@ void GS_TEXT(void) {
                     memset(&WindowMap[16][1], MT_BLANK, 18);
                     ActiveText.TilePt.Y = 17;
                     ActiveText.Tick = 8;
+                    PlayWave(Sound.Voice, &Sound.PressAB);
                 } else {
                     FlashTextCursor(&ActiveText);
                 }
@@ -735,6 +666,7 @@ void GS_TRANSITION(void) {
             }
         }
     }
+    UpdatePlayerMovement();
 }
 
 void GS_START_MENU(void) {
@@ -877,55 +809,6 @@ void GS_SAVE(void) {
         PopState();
     } else {
         MoveMenuCursor(&YesNoMenu);
-    }
-}
-
-void GS_OPTIONS(void) {
-    if(
-        VirtButtons[BT_START] == 1 || 
-        VirtButtons[BT_B] == 1 ||
-        (VirtButtons[BT_A] == 1 && OptionI == OPT_CANCEL)
-    ) {
-        /*RemoveSubMenu*/
-        PopWindowState();
-        PlayWave(Sound.Voice, &Sound.PressAB); 
-    } else {
-        /*MoveOptionsCursor*/
-        if(VirtButtons[BT_UP] == 1) {
-            PlaceOptionCursor(&Options.E[OptionI], MT_EMPTY_HORZ_ARROW);
-            OptionI = PosIntMod(OptionI - 1, _countof(Options.E)); 
-            PlaceOptionCursor(&Options.E[OptionI], MT_FULL_HORZ_ARROW);
-        } else if(VirtButtons[BT_LEFT] == 1) {
-            switch(Options.E[OptionI].Count) {
-            case 2:
-                /*SwapOptionSelected*/
-                ChangeOptionX(&Options.E[OptionI], Options.E[OptionI].I ^ 1); 
-                break;
-            case 3:
-                /*NextOptionLeft*/
-                if(Options.E[OptionI].I > 0) {
-                    ChangeOptionX(&Options.E[OptionI], Options.E[OptionI].I - 1); 
-                }
-                break;
-            }
-        } else if(VirtButtons[BT_DOWN] == 1) {
-            PlaceOptionCursor(&Options.E[OptionI], MT_EMPTY_HORZ_ARROW);
-            OptionI = PosIntMod(OptionI + 1, _countof(Options.E)); 
-            PlaceOptionCursor(&Options.E[OptionI], MT_FULL_HORZ_ARROW);
-        } else if(VirtButtons[BT_RIGHT] == 1) {
-            switch(Options.E[OptionI].Count) {
-            case 2:
-                /*SwapOptionSelected*/
-                ChangeOptionX(&Options.E[OptionI], Options.E[OptionI].I ^ 1); 
-                break;
-            case 3:
-                /*NextOptionRight*/
-                if(Options.E[OptionI].I < 2) {
-                    ChangeOptionX(&Options.E[OptionI], Options.E[OptionI].I + 1); 
-                }
-                break;
-            }
-        }
     }
 }
 
@@ -1394,32 +1277,6 @@ int WINAPI WinMain(HINSTANCE Instance, [[maybe_unused]] HINSTANCE Prev, LPSTR Cm
         }
 
         if(GetState() != GS_MAIN_MENU && GetState() != GS_CONTINUE && GetState() != GS_OPTIONS) {
-            /*UpdatePlayer*/
-            int CanPlayerMove = GetState() == GS_NORMAL || 
-                                GetState() == GS_LEAPING || 
-                                GetState() == GS_TRANSITION;
-            if(CanPlayerMove && World.Player.Tick > 0) {
-                if(World.Player.Tick % 16 == 8) {
-                    World.Player.IsRight ^= 1;
-                }
-                if(World.Player.IsMoving && World.Player.Tick % 2 == 0) {
-                    switch(World.Player.Dir) {
-                    case DIR_UP:
-                        ScrollY -= World.Player.Speed;
-                        break;
-                    case DIR_LEFT:
-                        ScrollX -= World.Player.Speed;
-                        break;
-                    case DIR_RIGHT:
-                        ScrollX += World.Player.Speed;
-                        break;
-                    case DIR_DOWN:
-                        ScrollY += World.Player.Speed;
-                        break;
-                    }
-                }
-                MoveEntity(&World.Player);
-            }
             sprite *SpriteQuad = &Sprites[SpriteI];
             UpdateAnimation(&World.Player, SpriteQuad, (point) {72, 72});
             SpriteI += 4;

@@ -1,6 +1,8 @@
 #include <stdio.h>
 
 #include "container.h"
+#include "save.h"
+#include "options.h"
 #include "window_map.h"
 #include "window_task.h"
 

@@ -40,19 +40,6 @@ typedef struct menu {
     int SelectI;
 } menu;
 
-typedef struct option {
-    int Y;
-    int Xs[3];
-    int I;
-    int Count;
-} option;
-
-typedef struct options_menu {
-    window_task WindowTask;
-    option E[4]; 
-    int I;
-} options_menu;
-
 typedef struct active_text {
     const char *Str;
     const char *Restore;
@@ -61,11 +48,6 @@ typedef struct active_text {
     int BoxDelay;
     int Props;
 } active_text;
-
-typedef struct save_rect {
-    window_task WindowTask;
-    const rect Rect;
-} save_rect;
 
 extern const rect BottomTextRect;
 
@@ -78,15 +60,11 @@ extern menu UseTossMenu;
 extern menu ConfirmTossMenu;
 
 extern uint8_t WindowMap[18][20];
-extern options_menu Options;
-
-extern int SaveSec;
-extern int StartSaveSec;
-
-extern save_rect ContinueSaveRect; 
-extern save_rect StartSaveRect;
 
 extern active_text ActiveText;
+
+extern window_task *DeferedTask;
+extern const char *DeferedMessage;
 
 int CharToTile(int Char);
 void PlaceTextBox(rect Rect);
@@ -96,12 +74,7 @@ void PlaceStaticText(rect Rect, const char *Text);
 
 void PlaceInventory(const inventory *Inventory);
 
-void PlaceOptionCursor(const option *Option, int Tile);
-void ChangeOptionX(option *Option, int NewOptionI);
-
 void PlaceSave(rect Rect);
-
-void PlaceOptionsMenu(options_menu *Options);
 
 void PlaceMenuCursor(const menu *Menu, int MenuTile);
 void PlaceMenu(const menu *Menu);

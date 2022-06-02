@@ -2,50 +2,13 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "menu.h"
 #include "window_map.h"
 #include "scalar.h"
 #include "input.h"
 
 const rect BottomTextRect = {0, 12, 20, 18};
 
-save_rect ContinueSaveRect = {
-    .WindowTask.Type = TT_SAVE, 
-    .Rect = {4, 7, 20, 17}
-};
-
-save_rect StartSaveRect = {
-    .WindowTask.Type = TT_SAVE, 
-    .Rect = {4, 0, 20, 10} 
-};
-
 uint8_t WindowMap[18][20];
-
-options_menu Options = {
-    .WindowTask.Type = TT_OPTIONS,
-    .E = {
-        [OPT_TEXT_SPEED] = {
-            .Y = 3,
-            .Xs = {1, 7, 14},
-            .Count = 3
-        },
-        [OPT_BATTLE_ANIMATION] = {
-            .Y = 8,
-            .Xs = {1, 10},
-            .Count = 2
-        },
-        [OPT_BATTLE_STYLE] = {
-            .Y = 13,
-            .Xs = {1, 10},
-            .Count = 2
-        },
-        [OPT_CANCEL] = {
-            .Y = 16,
-            .Xs = {1},
-            .Count = 1
-        }
-    }
-};
 
 menu MainMenu = { 
     .WindowTask.Type = TT_MENU,
@@ -109,10 +72,10 @@ menu ConfirmTossMenu = {
     .Flags = MF_AUTO_RESET
 };
 
-int SaveSec;
-int StartSaveSec;
-
 active_text ActiveText;
+
+window_task *DeferedTask;
+const char *DeferedMessage;
 
 void PlaceTextBox(rect Rect) {
     /*HeadRow*/
@@ -199,20 +162,6 @@ void PlaceStaticText(rect Rect, const char *Text) {
     PlaceText((point) {1, 14}, Text);
 }
 
-void PlaceSave(rect Rect) {
-    int SaveMin = MinInt(SaveSec / 60, 99 * 59 + 60); 
-    PlaceTextBox(Rect);
-    PlaceTextF(
-        (point) {Rect.Left + 1, Rect.Top + 2},
-        "PLAYER %s\nBADGES       %d\nPOK" "\xE9" "DEX    %3d\nTIME     %2d:%02d",
-        "RED",
-        0,
-        0,
-        SaveMin / 60,
-        SaveMin % 60
-    );
-}
-
 void PlaceMenuCursor(const menu *Menu, int MenuTile) {
     WindowMap[Menu->SelectI * 2 + Menu->TextY][Menu->Rect.Left + 1] = MenuTile; 
 }
@@ -221,16 +170,6 @@ void PlaceMenu(const menu *Menu) {
     PlaceTextBox(Menu->Rect); 
     PlaceText((point) {Menu->Rect.Left + 2, Menu->TextY}, Menu->Text); 
     PlaceMenuCursor(Menu, MT_FULL_HORZ_ARROW);
-}
-
-void PlaceOptionCursor(const option *Option, int Tile) {
-    WindowMap[Option->Y][Option->Xs[Option->I]] = Tile;
-}
-
-void ChangeOptionX(option *Option, int NewOptionI) {
-    PlaceOptionCursor(Option, MT_BLANK);
-    Option->I = NewOptionI;
-    PlaceOptionCursor(Option, MT_FULL_HORZ_ARROW);
 }
 
 void PlaceInventory(const inventory *Inventory) {
@@ -289,24 +228,6 @@ void MoveMenuCursorWrap(menu *Menu) {
     }
 }
 
-void PlaceOptionsMenu(options_menu *Options) {
-    memset(WindowMap, MT_BLANK, sizeof(WindowMap));
-    PlaceTextBox((rect) {0, 0, 20, 5});
-    PlaceTextBox((rect) {0, 5, 20, 10});
-    PlaceTextBox((rect) {0, 10, 20, 15});
-    PlaceText(
-        (point) {1, 1}, 
-        "TEXT SPEED\n FAST  MEDIUM SLOW\r" 
-        "BATTLE ANIMATION\n ON       OFF\r" 
-        "BATTLE STYLE\n SHIFT    SET\r"
-        " CANCEL"
-    ); 
-    Options->I = 0;
-    PlaceOptionCursor(&Options->E[0], MT_FULL_HORZ_ARROW); 
-    for(size_t I = 1; I < _countof(Options->E); I++) {
-        PlaceOptionCursor(&Options->E[I], MT_EMPTY_HORZ_ARROW);
-    }
-}
 
 void FlashTextCursor(active_text *ActiveText) {
     WindowMap[16][18] = ActiveText->Tick++ / 30 % 2 ? MT_BLANK : MT_FULL_VERT_ARROW;
