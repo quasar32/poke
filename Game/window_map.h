@@ -15,12 +15,31 @@
 #define MF_AUTO_RESET 1
 
 typedef enum menu_tile {
-    MT_FULL_VERT_ARROW = 171,
-    MT_FULL_HORZ_ARROW = 174,
-    MT_BLANK = 176,
-    MT_EMPTY_HORZ_ARROW = 177,
-    MT_TIMES = 178,
-    MT_QUESTION = 179
+    MT_EMPTY = 0,
+    MT_BLANK = 1,
+    MT_TOP_LEFT = 2,
+    MT_MIDDLE = 3,
+    MT_TOP_RIGHT = 4,
+    MT_CENTER_LEFT = 5,
+    MT_BOTTOM_LEFT = 6,
+    MT_CENTER_RIGHT = 7,
+    MT_BOTTOM_RIGHT = 8,
+    MT_ZERO = 9,
+    MT_CAPITAL_A = 20,
+    MT_LOWERCASE_A = 46,
+    MT_ACCENTED_E = 72,
+    MT_SLASH = 75,
+    MT_EXCLAMATION_POINT = 74,
+    MT_DASH = 76,
+    MT_FULL_VERT_ARROW = 77,
+    MT_TIDLE = 78,
+    MT_COMMA = 79,
+    MT_FULL_HORZ_ARROW = 80,
+    MT_PERIOD = 81,
+    MT_EMPTY_HORZ_ARROW = 83,
+    MT_TIMES = 84,
+    MT_QUESTION = 85,
+    MT_TRAINER = 86
 } menu_tile;
 
 typedef enum option_names {
@@ -59,14 +78,14 @@ extern menu YesNoMenu;
 extern menu UseTossMenu;
 extern menu ConfirmTossMenu;
 
-extern uint8_t WindowMap[18][20];
+extern uint8_t WindowMap[32][32];
 
 extern active_text ActiveText;
 
 extern window_task *DeferedTask;
 extern const char *DeferedMessage;
 
-int CharToTile(int Char);
+int CharToTile(const char **Char);
 void PlaceTextBox(rect Rect);
 void PlaceText(point TileMin, const char *Text);
 void PlaceTextF(point TileMin, const char *Format, ...);

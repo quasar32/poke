@@ -5,12 +5,6 @@
 #include "scalar.h"
 #include "world.h"
 
-typedef struct data_path {
-    const char *Tile;
-    const char *Quad;
-    const char *Prop;
-} data_path; 
-
 static const int8_t OverworldMusic[WORLD_HEIGHT][WORLD_WIDTH] = {
     {-1},
     {9},
@@ -23,6 +17,19 @@ static const char OverworldMapPaths[WORLD_HEIGHT][WORLD_WIDTH][16] = {
     {"Route1"},
     {"PalleteTown"},
     {"Route21"}
+};
+
+static const data_path DataPaths[] = {
+    {
+        .Tile = "TileData00",
+        .Quad = "QuadData00",
+        .Prop = "QuadProps00"
+    }, 
+    {
+        .Tile = "TileData01",
+        .Quad = "QuadData01",
+        .Prop = "QuadProps01"
+    }
 };
 
 /*TODO: Move in string library*/
@@ -148,23 +155,9 @@ void ReadMap(world *World, int MapI, const char *Path) {
     }
 
     /*ReadTileSet*/
-    static const data_path DataPaths[] = {
-        {
-            .Tile = "TileData00",
-            .Quad = "QuadData00",
-            .Prop = "QuadProps00"
-        }, 
-        {
-            .Tile = "TileData01",
-            .Quad = "QuadData01",
-            .Prop = "QuadProps01"
-        }
-    };
-    static const data_path *DataPath = NULL;
-
     const data_path *NewDataPath = &DataPaths[ReadBufferPopByte(&ReadBuffer) % _countof(DataPaths)]; 
-    if(DataPath != NewDataPath) {
-        DataPath = NewDataPath;
+    if(World->DataPath != NewDataPath) {
+        World->DataPath = NewDataPath;
         ReadTileData(NewDataPath->Tile, World->TileData, 96);
         ReadAll(NewDataPath->Quad, World->QuadData, sizeof(World->QuadData)); 
         ReadAll(NewDataPath->Prop, World->QuadProps, sizeof(World->QuadProps));
@@ -178,7 +171,7 @@ void ReadOverworldMap(world *World, int MapI, point Load) {
     const char *MapPath = OverworldMapPaths[Load.Y][Load.X]; 
     if(PointInWorld(Load) && MapPath) {
         ReadMap(World, MapI, MapPath);
-        ReadMusic(OverworldMusic[Load.Y][Load.X], MapI);
+        MusicI[MapI] = OverworldMusic[Load.Y][Load.X];
         World->IsOverworld = 1;
 
         map *Map = &World->Maps[MapI];

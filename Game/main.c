@@ -23,6 +23,7 @@
 #include "render.h"
 #include "save.h"
 #include "state.h"
+#include "text.h"
 
 /*Macro Strings*/
 #define RPC_WANT "What do you want\nto "
@@ -30,6 +31,7 @@
 #define RPC_WITHDRAW RPC_WANT "withdraw?"
 #define RPC_DEPOSIT RPC_WANT "deposit?"
 #define RPC_TOSS RPC_WANT "toss away?"
+#define POKEMON "POK" "\xE9" "MON"
 
 /*Globals*/
 static int SpriteI;
@@ -39,8 +41,6 @@ static dim_rect RestoreRect;
 static int IsFullscreen;
 
 static const rect SaveRect = {4, 0, 20, 10};
-
-static int IsSaveComplete;
 
 static int IsPauseAttempt;
 
@@ -57,23 +57,41 @@ static uint8_t WaterData[7][64];
 static int64_t Tick;
 static int64_t StartCounter;
 
+static uint8_t WindowX;
+static uint8_t WindowY;
+
+static bool IsWorldDisplayed;
+
+typedef enum pallete {
+    PAL_DEFAULT,
+    PAL_PALLETE,
+    PAL_ROUTE_1,
+    PAL_OAK
+} pallete;
+
 static const RGBQUAD Palletes[256][4] = {
-    {
+    [PAL_DEFAULT] = {
         {0xFF, 0xEF, 0xFF, 0x00},
         {0xA8, 0xA8, 0xA8, 0x00},
         {0x80, 0x80, 0x80, 0x00},
         {0x10, 0x10, 0x18, 0x00}
     },
-    {
+    [PAL_PALLETE] = {
         {0xFF, 0xEF, 0xFF, 0x00},
         {0xDE, 0xE7, 0xCE, 0x00},
         {0xFF, 0xD6, 0xA5, 0x00},
         {0x10, 0x10, 0x18, 0x00}
     },
-    {
+    [PAL_ROUTE_1] = {
         {0xFF, 0xEF, 0xFF, 0x00},
         {0x5A, 0xE7, 0xAD, 0x00},
         {0xFF, 0xD6, 0xA5, 0x00},
+        {0x10, 0x10, 0x18, 0x00}
+    },
+    [PAL_OAK] = {
+        {0xFF, 0xEF, 0xFF, 0x00},
+        {0x8C, 0xB5, 0xF7, 0x00},
+        {0x9C, 0x73, 0x84, 0x00},
         {0x10, 0x10, 0x18, 0x00}
     }
 };
@@ -94,16 +112,6 @@ static int ReverseDir(int Dir) {
     return (Dir + 2) % 4;
 }
 
-/*String Functions*/
-static int DoesStartStringMatch(const char *Dst, const char *Src) {
-    for(int I = 0; Src[I] != '\0'; I++) {
-        if(Dst[I] != Src[I]) {
-            return 0;
-        }
-    }
-    return 1; 
-}
-
 /*Point Conversion unctions*/
 static point GetFacingPoint(point Pos, int Dir) {
     point OldPoint = PtToQuadPt(Pos);
@@ -111,13 +119,16 @@ static point GetFacingPoint(point Pos, int Dir) {
     return AddPoints(OldPoint, DirPoint);
 }
 
-/*Misc Functions*/
-static int IsPressABWithSound(void) {
-    int ABIsPressed = VirtButtons[BT_A] == 1 || VirtButtons[BT_B] == 1;
-    if(ABIsPressed) {
-        PlayWave(Sound.Voice, &Sound.PressAB);
+void MulTickUpdate(void) {
+    int TickCycle = Tick / 32 % 9;
+    if(Tick % 16 == 0 && World.IsOverworld) {
+        /*FlowersUpdate*/
+        memcpy(World.TileData[3], FlowerData[TickCycle % 3], 64);
+
+        /*WaterUpdate*/
+        int TickMod = TickCycle < 5 ? TickCycle : 9 - TickCycle;
+        memcpy(World.TileData[20], WaterData[TickMod], 64);
     }
-    return ABIsPressed;
 }
 
 void GS_MAIN_MENU(void);
@@ -125,7 +136,6 @@ void GS_CONTINUE(void);
 
 void GS_NORMAL(void);
 void GS_LEAPING(void);
-void GS_TEXT(void);
 void GS_TRANSITION(void);
 
 void GS_START_MENU(void);
@@ -145,6 +155,152 @@ void GS_RED_PC_REPEAT_INTRO(void);
 
 void GS_REMOVE_WINDOW_TASK(void);
 void GS_PUSH_WINDOW_TASK(void);
+
+static void PushPlayerSprite(void) {
+    sprite *SpriteQuad = &Sprites[SpriteI];
+    UpdateAnimation(&World.Player, SpriteQuad, (point) {72, 72});
+    SpriteI += 4;
+}
+
+static void DisplayWorld(void) {
+    IsWorldDisplayed = true;
+    ReadTileData("FlowerData", FlowerData, 3);
+    ReadTileData("WaterData", WaterData, 7);
+    ReadTileData("ShadowData", &SpriteData[255], 1);
+    ReadTileData("SpriteData", SpriteData, 255);
+}
+
+static void UpdateLeaping(void) {
+    if(GetState() == GS_LEAPING) {
+        /*PlayerUpdateJumpingAnimation*/
+        const static uint8_t PlayerDeltas[] = {0, 4, 6, 8, 9, 10, 11, 12};
+        uint8_t HalfTick = World.Player.Tick / 2;
+        uint8_t DeltaI = HalfTick < 8 ? HalfTick: 15 - HalfTick;
+        for(int I = 0; I < 4; I++) {
+            Sprites[I].Y -= PlayerDeltas[DeltaI];
+        }
+
+        /*CreateShadowQuad*/
+        if(HalfTick) {
+            sprite *ShadowQuad  = &Sprites[SpriteI]; 
+            ShadowQuad[0] = (sprite) {72, 72, 255, 0};
+            ShadowQuad[1] = (sprite) {80, 72, 255, SPR_HORZ_FLAG};
+            ShadowQuad[2] = (sprite) {72, 80, 255, SPR_VERT_FLAG};
+            ShadowQuad[3] = (sprite) {80, 80, 255, SPR_HORZ_FLAG | SPR_VERT_FLAG};
+            SpriteI += 4;
+        } else {
+            ReplaceState(GS_NORMAL);
+        }
+    }
+}
+
+static void UpdateObjects(void) {
+    SpriteI = 0;
+    PushPlayerSprite();
+    UpdateLeaping(); 
+    for(int MapI = 0; MapI < (int) _countof(World.Maps); MapI++) {
+        for(int ObjI = 0; ObjI < World.Maps[MapI].ObjectCount; ObjI++) {
+            object *Object = &World.Maps[MapI].Objects[ObjI];
+
+            /*TickFrame*/
+            if(GetState() == GS_NORMAL) {
+                if(Object->Speed == 0) {
+                    if(Object->Tick > 0) {
+                        Object->Tick--; 
+                    } else {
+                        Object->Dir = Object->StartingDir;
+                    }
+                    if(Object->Tick % 16 == 8) {
+                        Object->IsRight ^= 1;
+                    }
+                } else if(Object->Tick > 0) {
+                    MoveEntity(Object);
+                } else if(!IsPauseAttempt) {
+                    /*RandomMove*/
+                    const map *Map = &World.Maps[MapI];
+                    int Seed = rand();
+                    if(Seed % 64 == 0) {
+                        Object->Dir = Seed / 64 % 4;
+
+                        point NewPoint = GetFacingPoint(Object->Pos, Object->Dir);
+
+                        /*FetchQuadPropSingleMap*/
+                        int Quad = -1;
+                        int Prop = QUAD_PROP_SOLID;
+                        if(PointInMap(Map, NewPoint)) {
+                            Quad = Map->Quads[NewPoint.Y][NewPoint.X];
+                            Prop = World.QuadProps[Quad];
+                        }
+                        
+                        /*CheckForCollisions*/
+                        int WillCollide = WillObjectCollide(&World.Player, NewPoint);
+                        for(int I = 0; I < World.Maps[MapI].ObjectCount && !WillCollide; I++) {
+                            const object *OtherObject = &World.Maps[MapI].Objects[I]; 
+                            if(Object != OtherObject) {
+                                WillCollide = WillObjectCollide(OtherObject, NewPoint); 
+                            }
+                        } 
+
+                        /*StartMovingEntity*/
+                        if(Prop == QUAD_PROP_NONE && !WillCollide) {
+                            Object->Tick = 32;
+                            Object->IsMoving = 1;
+                        }
+                    }
+                }
+            }
+
+            /*GetObjectRenderPos*/
+            point QuadPt = {
+                Object->Pos.X - World.Player.Pos.X + 72,
+                Object->Pos.Y - World.Player.Pos.Y + 72
+            };
+
+            if(World.MapI != MapI) {
+                switch(GetMapDir(World.Maps, World.MapI)) {
+                case DIR_UP:
+                    QuadPt.Y -= World.Maps[MapI].Height * 16;
+                    break;
+                case DIR_LEFT:
+                    QuadPt.X -= World.Maps[MapI].Width * 16;
+                    break;
+                case DIR_DOWN:
+                    QuadPt.Y += World.Maps[World.MapI].Height * 16;
+                    break;
+                case DIR_RIGHT:
+                    QuadPt.X += World.Maps[World.MapI].Width * 16;
+                    break;
+                }
+            }
+
+            /*RenderObject*/
+            if(ObjectInUpdateBounds(QuadPt) && SpriteI < 40) {
+                sprite *SpriteQuad = &Sprites[SpriteI];
+                UpdateAnimation(Object, SpriteQuad, QuadPt);
+                SpriteI += 4;
+            }
+        }
+    }
+}
+
+static void FillBitmapColors(pallete PalleteI) {
+    memcpy(Bitmap.Colors, Palletes[PalleteI], sizeof(Palletes[PalleteI]));
+}
+
+static void UpdatePallete(void) {
+    if(GetState() != GS_TRANSITION && World.Player.Tick <= 0) {
+        FillBitmapColors(World.Maps[World.MapI].PalleteI);
+    }
+}
+
+/*Misc Functions*/
+static int IsPressABWithSound(void) {
+    int ABIsPressed = VirtButtons[BT_A] == 1 || VirtButtons[BT_B] == 1;
+    if(ABIsPressed) {
+        PlayWave(Sound.Voice, &Sound.PressAB);
+    }
+    return ABIsPressed;
+}
 
 void UpdatePlayerMovement(void) {
     if(World.Player.Tick > 0) {
@@ -171,37 +327,6 @@ void UpdatePlayerMovement(void) {
     }
 }
 
-void GS_MAIN_MENU(void) {
-    menu *CurrentMenu = GET_TOP_WINDOW_TASK(menu); 
-    MoveMenuCursor(CurrentMenu);
-    if(VirtButtons[BT_A] == 1) {
-        switch(CurrentMenu->EndI - CurrentMenu->SelectI) {
-        case 3: /*CONTINUE*/
-            ReadSaveHeader();
-            PushWindowTask(&ContinueSaveRect.WindowTask);
-            memset(TileMap, MT_BLANK, sizeof(TileMap));
-            PushState(GS_CONTINUE);
-            break;
-        case 2: /*NEW GAME*/
-            StartCounter = QueryPerfCounter();
-            ClearWindowStack();
-            ReadOverworldMap(&World, 0, (point) {0, 2});
-            SetPlayerToDefault(&World);
-            MusicTick = 60;
-            PlaceViewMap(&World, 0);
-            ScrollX = 0;
-            ScrollY = 0;
-            ReplaceState(GS_NORMAL);
-            break;
-        case 1: /*OPTIONS*/
-            PushWindowTask(&Options.WindowTask);
-            PushState(GS_OPTIONS);
-            break;
-        }
-        PlayWave(Sound.Voice, &Sound.PressAB); 
-    }
-}
-
 void GS_CONTINUE(void) {
     static int ShowTick = 0;
     if(MusicTick <= 0) {
@@ -220,6 +345,187 @@ void GS_CONTINUE(void) {
             PopWindowTask();
             ClearWindow();
         }
+    }
+}
+
+static void PlaceOak(void) {
+    int TileI = MT_TRAINER;
+    for(int Y = 4; Y < 11; Y++) {
+        for(int X = 7; X < 14; X++) {
+            WindowMap[Y][X] = TileI++;
+        }
+    }
+}
+
+static void ReverseRow(uint8_t Row[8]) {
+    for(int I = 0; I < 4; I++) {
+        SWAP(&Row[I], &Row[7 - I]);
+    }
+}
+
+static void ReverseWindowTile(uint8_t Tile[64]) {
+    for(int Y = 0; Y < 8; Y++) {
+        ReverseRow(&Tile[Y * 8]);
+    }
+}
+
+static void ReadReverseNidorino(void) {
+    ReadTileData("Nidorino", &WindowData[MT_TRAINER], 36);
+    for(int I = 0; I < 36; I++) {
+        ReverseWindowTile(WindowData[MT_TRAINER + I]);
+    } 
+}
+
+static void PlaceReverseNidorino(void) {
+    int TileRowI = MT_TRAINER;
+    for(int Y = 5; Y < 11; Y++) {
+        int TileI = TileRowI + 6;
+        for(int X = 6; X < 12; X++) {
+            WindowMap[Y][X] = --TileI;
+        } 
+        TileRowI += 6;
+    }
+    WindowX = BM_WIDTH;
+}
+
+static void SetPalleteTransition(pallete I, int C1, int C2, int C3) {
+    Bitmap.Colors[1] = Palletes[PAL_OAK][C1];
+    Bitmap.Colors[2] = Palletes[PAL_OAK][C2];
+    Bitmap.Colors[3] = Palletes[PAL_OAK][C3];
+}
+
+void GS_DISPLAY_OAK(void) {
+    int TickCycle = TransitionTick / 8;
+    if(TickCycle < 8) {
+        if(TransitionTick % 8 == 0) {
+            switch(TickCycle) {
+            case 0:
+                SetPalleteTransition(PAL_OAK, 1, 1, 1);
+                break;
+            case 1:
+                SetPalleteTransition(PAL_OAK, 2, 2, 2);
+                break;
+            case 2:
+                SetPalleteTransition(PAL_OAK, 3, 3, 3);
+                break;
+            case 3:
+                Bitmap.Colors[1] = Palletes[PAL_OAK][2];
+                break;
+            case 4:
+                Bitmap.Colors[1] = Palletes[PAL_OAK][1];
+                break;
+            case 5:
+                Bitmap.Colors[2] = Palletes[PAL_OAK][2];
+                break;
+            }
+        }
+        TransitionTick++;
+    } else {
+        TransitionTick = 0;
+        PopState();
+    }
+}
+
+void GS_FADE_OAK(void) {
+    int TickCycle = TransitionTick / 8;
+    if(TickCycle < 8) {
+        if(TransitionTick % 8 == 0) {
+            switch(TickCycle) {
+            case 0:
+                SetPalleteTransition(PAL_OAK, 0, 1, 2); 
+                break;
+            case 1:
+                SetPalleteTransition(PAL_OAK, 0, 0, 1); 
+                break;
+            case 2:
+                ClearWindowStack();
+                FillBitmapColors(PAL_OAK);
+                break;
+            case 7:
+                ReadReverseNidorino();
+                PlaceReverseNidorino();
+                break;
+            } 
+        }
+        TransitionTick++;
+    } else if(WindowX > 0) {
+        WindowX -= 8;
+    } else {
+        ActiveText = (active_text) {
+            .Str = 
+                "This world is\n"
+                "inhabited by\n"
+                "creatures called\n"
+                "POKÈMON!\f"
+                "For some people,\n"
+                "POKÈMON are\n"
+                "pets. Others use\n"
+                "them for fights.\f"
+                "Myself...\f"
+                "I study POKÈMON\n"
+                "as a profession.",
+            .Props = AT_MANUAL_RESTORE | AT_WAIT_FLASH
+        };
+        ReplaceState(GS_TEXT);
+    }
+}
+
+static void ClearPallete(void) {
+    for(int I = 0; I < 4; I++) {
+        Bitmap.Colors[I] = Palletes[PAL_DEFAULT][0];
+    }
+}
+
+void GS_NEW_GAME(void) {
+    StartSaveSec = 0;
+    StartCounter = QueryPerfCounter();
+    ClearWindowStack();
+    ReadOverworldMap(&World, 0, (point) {0, 2});
+    MusicTick = 60;
+    PlaceViewMap(&World, 0);
+    ScrollX = 0;
+    ScrollY = 0;
+    DisplayWorld();
+    ReplaceState(GS_NORMAL);
+}
+
+void GS_MAIN_MENU(void) {
+    menu *CurrentMenu = GET_TOP_WINDOW_TASK(menu); 
+    MoveMenuCursor(CurrentMenu);
+    if(VirtButtons[BT_A] == 1) {
+        switch(CurrentMenu->EndI - CurrentMenu->SelectI) {
+        case 3: /*CONTINUE*/
+            PushWindowTask(&ContinueSaveRect.WindowTask);
+            memset(TileMap, 255, sizeof(TileMap));
+            PushState(GS_CONTINUE);
+            break;
+        case 2: /*NEW GAME*/
+            ClearWindowStack();
+            ClearPallete();
+            PlaceOak();
+            MusicTick = 60;
+            ActiveText = (active_text) {
+                .Str = 
+                    "Hello there!\n"
+                    "Welcome to the\n"
+                    "world of POK" "\xE9" "MON!\f"
+                    "My name is OAK!\n"
+                    "People call me\n"
+                    "the POK" "\xE9" "MON PROF!",
+                .Props = AT_MANUAL_RESTORE | AT_WAIT_FLASH 
+            };
+            TransitionTick = -30;
+            ReplaceState(GS_NEW_GAME); 
+            PushState(GS_FADE_OAK);
+            PushState(GS_TEXT);
+            PushState(GS_DISPLAY_OAK);
+            break;
+        case 1: /*OPTIONS*/
+            PushWindowTask(&Options.WindowTask);
+            PushState(GS_OPTIONS);
+            break;
+        }
+        PlayWave(Sound.Voice, &Sound.PressAB); 
     }
 }
 
@@ -490,117 +796,36 @@ void GS_LEAPING(void) {
     UpdatePlayerMovement();
 }
 
-void GS_TEXT(void) {
-    if(ActiveText.BoxDelay >= 0) {
-        if(ActiveText.BoxDelay == 0) {
-            if(IsSaveComplete) {
-                PlayWave(Sound.Voice, &Sound.Save);
-                IsSaveComplete = 0;
+static void LoadDoorMap(void) {
+    quad_info QuadInfo = GetQuadInfo(&World, DoorPoint); 
+    map *OldMap = &World.Maps[QuadInfo.MapI]; 
+
+    for(int I = 0; I < OldMap->DoorCount; I++) {
+        const door *Door = &OldMap->Doors[I];
+        if(EqualPoints(Door->Pos, QuadInfo.Point)) {
+            /*DoorToDoor*/
+            ReadMap(&World, !QuadInfo.MapI, Door->Path);
+            World.MapI = !QuadInfo.MapI;
+            World.Player.Pos = QuadPtToPt(Door->DstPos);
+            GetLoadedPoint(&World, !QuadInfo.MapI, Door->Path);
+
+            /*CompleteTransition*/
+            ScrollX = 0;
+            ScrollY = 0;
+
+            memset(OldMap, 0, sizeof(*OldMap));
+            if(QuadInfo.Prop == QUAD_PROP_EXIT) {
+                World.Player.IsMoving = 1;
+                World.Player.Tick = 16;
+                PlaceViewMap(&World, 1);
+            } else {
+                PlaceViewMap(&World, 0);
             }
-            PlaceTextBox(BottomTextRect);
-            ActiveText.TilePt = (point) {1, 14};
-        }
-        ActiveText.BoxDelay--;
-    } else { 
-        if(!ActiveText.Str[0]) {
-            if(ActiveText.Restore) {
-                ActiveText.Str = ActiveText.Restore;
-                ActiveText.Restore = NULL;
-            } 
-        }
-        if(ActiveText.Str[0]) {
-            switch(ActiveText.TilePt.Y) {
-            case 17:
-                /*MoreTextDisplay*/
-                if(ActiveText.Tick > 0) {
-                    ActiveText.Tick--;
-                } else switch(ActiveText.Str[-1]) {
-                case '\n':
-                    memcpy(&WindowMap[14][1], &WindowMap[15][1], 17);
-                    memset(&WindowMap[13][1], MT_BLANK, 17);
-                    memset(&WindowMap[15][1], MT_BLANK, 17);
-                    ActiveText.TilePt.Y = 16;
-                    break;
-                case '\f':
-                    ActiveText.TilePt.Y = 14;
-                    break;
-                }
-                break;
-            case 18:
-                /*MoreTextWait*/
-                if(VirtButtons[BT_A] == 1 || VirtButtons[BT_B] == 1) {
-                    if(ActiveText.Str[-1] == '\n') {
-                        memcpy(&WindowMap[13][1], &WindowMap[14][1], 17);
-                        memcpy(&WindowMap[15][1], &WindowMap[16][1], 17);
-                    }
-                    memset(&WindowMap[14][1], MT_BLANK, 17);
-                    memset(&WindowMap[16][1], MT_BLANK, 18);
-                    ActiveText.TilePt.Y = 17;
-                    ActiveText.Tick = 8;
-                    PlayWave(Sound.Voice, &Sound.PressAB);
-                } else {
-                    FlashTextCursor(&ActiveText);
-                }
-                break;
-            default:
-                /*UpdateTextForNextChar*/
-                if(ActiveText.Tick > 0) {
-                    ActiveText.Tick--;
-                } else {
-                    if(ActiveText.Str[0] == '[') {
-                        ActiveText.Restore = ActiveText.Str;
-                        if(DoesStartStringMatch(ActiveText.Str, "[ITEM]")) {
-                            ActiveText.Restore += sizeof("[ITEM]") - 1;
-                            ActiveText.Str = ItemNames[DisplayItem.ID];
-                        } else {
-                            ActiveText.Restore++;
-                            ActiveText.Str = "???";
-                        }
-                    }
-                    switch(ActiveText.Str[0]) {
-                    case '\n':
-                        ActiveText.TilePt.X = 1;
-                        ActiveText.TilePt.Y += 2;
-                        ActiveText.Str++;
-                        break;
-                    case '\f':
-                        ActiveText.TilePt.X = 1;
-                        ActiveText.TilePt.Y = 18;
-                        ActiveText.Str++;
-                        break;
-                    default:
-                        WindowMap[ActiveText.TilePt.Y][ActiveText.TilePt.X] = CharToTile(*ActiveText.Str);
-                        if(ActiveText.TilePt.X < 20) {
-                            ActiveText.TilePt.X++;
-                            ActiveText.Str++;
-                        } else {
-                            ActiveText.Str = "";
-                        }
-                    }
-                    if(ActiveText.TilePt.Y != 18) {
-                        /*UseTextSpeed*/
-                        if(!VirtButtons[BT_A] && !VirtButtons[BT_B]) {
-                            ActiveText.Tick = (uint64_t[]) {0, 2, 3}[Options.E[OPT_TEXT_SPEED].I];
-                        }
-                    }
-                }
-            }
-        } else {
-            /*RestoreFromText*/
-            if(ActiveText.Props & AT_WAIT_FLASH) {
-                FlashTextCursor(&ActiveText);
-            }
-            if(VirtButtons[BT_A] || !(ActiveText.Props & AT_MANUAL_RESTORE)) {
-                if(ActiveText.Props & AT_WAIT_FLASH) {
-                    PlayWave(Sound.Voice, &Sound.PressAB);
-                }
-                if(ActiveText.Props & AT_AUTO_CLEAR) {
-                    ClearBottomWindow();
-                }
-                PopState();
-            }
-        }
+            break;
+        } 
     }
+
+    ReplaceState(GS_NORMAL);
 }
 
 void GS_TRANSITION(void) {
@@ -613,57 +838,23 @@ void GS_TRANSITION(void) {
     }
 
     /*ProgressTransition*/
-    if(!World.Player.IsMoving) {
-        if(TransitionTick-- > 0) {
-            switch(TransitionTick) {
-            case 24:
-                Bitmap.Colors[0] = Palletes[World.Maps[World.MapI].PalleteI][1]; 
-                Bitmap.Colors[1] = Palletes[World.Maps[World.MapI].PalleteI][2]; 
-                Bitmap.Colors[2] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
-                break;
-            case 16:
-                Bitmap.Colors[0] = Palletes[World.Maps[World.MapI].PalleteI][2]; 
-                Bitmap.Colors[1] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
-                break;
-            case 8:
-
-                Bitmap.Colors[0] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
-                break;
-            case 0:
-                {
-                    /*LoadDoorMap*/
-                    quad_info QuadInfo = GetQuadInfo(&World, DoorPoint); 
-                    map *OldMap = &World.Maps[QuadInfo.MapI]; 
-
-                    for(int I = 0; I < OldMap->DoorCount; I++) {
-                        const door *Door = &OldMap->Doors[I];
-                        if(EqualPoints(Door->Pos, QuadInfo.Point)) {
-                            /*DoorToDoor*/
-                            ReadMap(&World, !QuadInfo.MapI, Door->Path);
-                            World.MapI = !QuadInfo.MapI;
-                            World.Player.Pos = QuadPtToPt(Door->DstPos);
-                            GetLoadedPoint(&World, !QuadInfo.MapI, Door->Path);
-
-                            /*CompleteTransition*/
-                            ScrollX = 0;
-                            ScrollY = 0;
-
-                            memset(OldMap, 0, sizeof(*OldMap));
-                            if(QuadInfo.Prop == QUAD_PROP_EXIT) {
-                                World.Player.IsMoving = 1;
-                                World.Player.Tick = 16;
-                                PlaceViewMap(&World, 1);
-                            } else {
-                                PlaceViewMap(&World, 0);
-                            }
-                            break;
-                        } 
-                    }
-
-                    ReplaceState(GS_NORMAL);
-                    break;
-                }
-            }
+    if(!World.Player.IsMoving && TransitionTick-- > 0) {
+        switch(TransitionTick) {
+        case 24:
+            Bitmap.Colors[0] = Palletes[World.Maps[World.MapI].PalleteI][1]; 
+            Bitmap.Colors[1] = Palletes[World.Maps[World.MapI].PalleteI][2]; 
+            Bitmap.Colors[2] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
+            break;
+        case 16:
+            Bitmap.Colors[0] = Palletes[World.Maps[World.MapI].PalleteI][2]; 
+            Bitmap.Colors[1] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
+            break;
+        case 8:
+            Bitmap.Colors[0] = Palletes[World.Maps[World.MapI].PalleteI][3]; 
+            break;
+        case 0:
+            LoadDoorMap();
+            break;
         }
     }
     UpdatePlayerMovement();
@@ -720,6 +911,19 @@ void GS_START_MENU(void) {
     }
 }
 
+static void SelectRedPCItem(void) {
+    ActiveText = (active_text) {
+        .Str = "How many?", 
+    };
+    DeferedTask = &DisplayWindowTask;
+    DeferedMessage = RPCStrings[InventoryState];
+    PushState(GS_REMOVE_WINDOW_TASK);
+    PushState(GS_RED_PC_REPEAT_INTRO);
+    PushState(GS_RED_PC_ITEM);
+    PushState(GS_PUSH_WINDOW_TASK);
+    PushState(GS_TEXT);
+}
+
 void GS_INVENTORY(void) {
     if(VirtButtons[BT_B] == 1 || 
        (VirtButtons[BT_A] == 1 && Inventory->ItemSelect == Inventory->ItemCount)) {
@@ -738,16 +942,7 @@ void GS_INVENTORY(void) {
                 PushState(GS_USE_TOSS);
                 break;
             default:
-                ActiveText = (active_text) {
-                    .Str = "How many?", 
-                };
-                DeferedTask = &DisplayWindowTask;
-                DeferedMessage = RPCStrings[InventoryState];
-                PushState(GS_REMOVE_WINDOW_TASK);
-                PushState(GS_RED_PC_REPEAT_INTRO);
-                PushState(GS_RED_PC_ITEM);
-                PushState(GS_PUSH_WINDOW_TASK);
-                PushState(GS_TEXT);
+                SelectRedPCItem();
             } 
         } else if(VirtButtons[BT_UP] % 10 == 1 && Inventory->ItemSelect > 0) {
             Inventory->ItemSelect--; 
@@ -792,7 +987,7 @@ void GS_SAVE(void) {
             ReplaceState(GS_NORMAL);
             PushState(GS_REMOVE_WINDOW_TASK);
             PushState(GS_TEXT);
-            IsSaveComplete = 1;
+            IsSaveComplete = true;
         } else {
             /*Error*/
             ActiveText = (active_text) {
@@ -1151,7 +1346,6 @@ int WINAPI WinMain(HINSTANCE Instance, [[maybe_unused]] HINSTANCE Prev, LPSTR Cm
     /*MuteModeLaunch*/
     int IsMute = strcmp(CmdLine, "mute") == 0;
 
-    /*InitPallete*/
     /*InitWindow*/
     WNDCLASS WindowClass = {
         .style = CS_HREDRAW | CS_VREDRAW,
@@ -1197,21 +1391,16 @@ int WINAPI WinMain(HINSTANCE Instance, [[maybe_unused]] HINSTANCE Prev, LPSTR Cm
             if(InitXAudio2(&XAudio2)) {
                 HRESULT SoundResult = CreateGenericVoice(XAudio2.Engine, &Sound.Voice);
                 if(SUCCEEDED(SoundResult)) {
-                    ReadSound("SFX_COLLISION.wav", &Sound.Collision);
-                    ReadSound("SFX_LEDGE.wav", &Sound.Ledge);
-                    ReadSound("SFX_START_MENU.wav", &Sound.StartMenu);
-                    ReadSound("SFX_PRESS_AB.wav", &Sound.PressAB);
-                    ReadSound("SFX_GO_OUTSIDE.wav", &Sound.GoOutside);
-                    ReadSound("SFX_GO_INSIDE.wav", &Sound.GoInside);
-                    ReadSound("SFX_SAVE.wav", &Sound.Save);
-                    ReadSound("SFX_TURN_ON_PC.wav", &Sound.TurnOnPC);
-                    ReadSound("SFX_TURN_OFF_PC.wav", &Sound.TurnOffPC);
-                    ReadSound("SFX_WITHDRAW_DEPOSIT.wav", &Sound.WithdrawDeposit);
-                }
-         
-                HRESULT MusicResult = CreateGenericVoice(XAudio2.Engine, &MusicVoice);
-                if(SUCCEEDED(MusicResult)) {
-                    ReadMusic(1, 1);
+                    ReadSound("SoundEffects/SFX_COLLISION.ogg", &Sound.Collision);
+                    ReadSound("SoundEffects/SFX_LEDGE.ogg", &Sound.Ledge);
+                    ReadSound("SoundEffects/SFX_START_MENU.ogg", &Sound.StartMenu);
+                    ReadSound("SoundEffects/SFX_PRESS_AB.ogg", &Sound.PressAB);
+                    ReadSound("SoundEffects/SFX_GO_OUTSIDE.ogg", &Sound.GoOutside);
+                    ReadSound("SoundEffects/SFX_GO_INSIDE.ogg", &Sound.GoInside);
+                    ReadSound("SoundEffects/SFX_SAVE.ogg", &Sound.Save);
+                    ReadSound("SoundEffects/SFX_TURN_ON_PC.ogg", &Sound.TurnOnPC);
+                    ReadSound("SoundEffects/SFX_TURN_OFF_PC.ogg", &Sound.TurnOffPC);
+                    ReadSound("SoundEffects/SFX_WITHDRAW_DEPOSIT.ogg", &Sound.WithdrawDeposit);
                 }
             } else { 
                 DestroyCom(&Com);
@@ -1224,21 +1413,19 @@ int WINAPI WinMain(HINSTANCE Instance, [[maybe_unused]] HINSTANCE Prev, LPSTR Cm
 
     SetPlayerToDefault(&World);
 
-    ReadTileData("Menu", &World.TileData[96], 152);
-    ReadTileData("SpriteData", SpriteData, 256);
-    ReadTileData("FlowerData", FlowerData, 3);
-    ReadTileData("WaterData", WaterData, 7);
-    ReadTileData("ShadowData", &SpriteData[255], 1);
+    ReadTileData("Menu", &WindowData[2], 84);
+    ReadTileData("Oak", &WindowData[MT_TRAINER], 56); 
 
     /*InitMainMenu*/
     if(GetFileAttributes("Save") == INVALID_FILE_ATTRIBUTES) {
         PushWindowTask(&MainMenu.WindowTask);
     } else {
         PushWindowTask(&ContinueMenu.WindowTask);
+        ReadSaveHeader();
     }
 
     memcpy(Bitmap.Colors, Palletes[0], sizeof(Palletes[0]));
-    PlayMusic(1); 
+    PlayMusic(&XAudio2, 1); 
     
     PushState(GS_MAIN_MENU);
 
@@ -1250,167 +1437,43 @@ int WINAPI WinMain(HINSTANCE Instance, [[maybe_unused]] HINSTANCE Prev, LPSTR Cm
         ProcessMessages(Window);
         UpdateInput(GetActiveWindow() == Window);
 
-        if(VirtButtons[BT_FULLSCREEN] == 1) ToggleFullscreen(Window);
+        if(VirtButtons[BT_FULLSCREEN] == 1) {
+            ToggleFullscreen(Window);
+        }
         ExecuteState();
-
-        SpriteI = 0;
 
         if(MusicTick > 0) {
             MusicTick--;
-            SetVolume(MusicVoice, (float) MusicTick / 60.0f);
+            SetVolume(XAudio2.SourceVoice, (float) MusicTick / 60.0f);
             if(MusicTick == 0) {
                 StartCounter = QueryPerfCounter();
-                SetVolume(MusicVoice, 1.0f);
                 if(GetState() == GS_CONTINUE) {
-                    if(MusicI[0]) {
-                        ReadMusic(MusicI[0], 0);
-                    }
-                    if(MusicI[1]) {
-                        ReadMusic(MusicI[1], 1);
-                    }
                     PlaceViewMap(&World, 0);
+                    DisplayWorld();
                     PopState();
                     ReplaceState(GS_NORMAL);
-                }
-                PlayMusic(World.MapI);
+                    PlayMusic(&XAudio2, MusicI[World.MapI]);
+                } else if(GetState() == GS_DISPLAY_OAK) {
+                    PlayMusic(&XAudio2, 2);
+                } else {
+                    PlayMusic(&XAudio2, MusicI[World.MapI]);
+                } 
+                SetVolume(XAudio2.SourceVoice, 1.0f);
             }
         }
 
-        if(GetState() != GS_MAIN_MENU && GetState() != GS_CONTINUE && GetState() != GS_OPTIONS) {
-            sprite *SpriteQuad = &Sprites[SpriteI];
-            UpdateAnimation(&World.Player, SpriteQuad, (point) {72, 72});
-            SpriteI += 4;
-
-            /*UpdateLeaping*/
-            if(GetState() == GS_LEAPING) {
-                /*PlayerUpdateJumpingAnimation*/
-                const static uint8_t PlayerDeltas[] = {0, 4, 6, 8, 9, 10, 11, 12};
-                uint8_t HalfTick = World.Player.Tick / 2;
-                uint8_t DeltaI = HalfTick < 8 ? HalfTick: 15 - HalfTick;
-                for(int I = 0; I < 4; I++) {
-                    Sprites[I].Y -= PlayerDeltas[DeltaI];
-                }
-
-                /*CreateShadowQuad*/
-                if(HalfTick) {
-                    sprite *ShadowQuad  = &Sprites[SpriteI]; 
-                    ShadowQuad[0] = (sprite) {72, 72, 255, 0};
-                    ShadowQuad[1] = (sprite) {80, 72, 255, SPR_HORZ_FLAG};
-                    ShadowQuad[2] = (sprite) {72, 80, 255, SPR_VERT_FLAG};
-                    ShadowQuad[3] = (sprite) {80, 80, 255, SPR_HORZ_FLAG | SPR_VERT_FLAG};
-                    SpriteI += 4;
-                } else {
-                    ReplaceState(GS_NORMAL);
-                }
-            }
-       
-            /*UpdateObjects*/
-            for(int MapI = 0; MapI < (int) _countof(World.Maps); MapI++) {
-                for(int ObjI = 0; ObjI < World.Maps[MapI].ObjectCount; ObjI++) {
-                    object *Object = &World.Maps[MapI].Objects[ObjI];
-
-                    /*TickFrame*/
-                    if(GetState() == GS_NORMAL) {
-                        if(Object->Speed == 0) {
-                            if(Object->Tick > 0) {
-                                Object->Tick--; 
-                            } else {
-                                Object->Dir = Object->StartingDir;
-                            }
-                            if(Object->Tick % 16 == 8) {
-                                Object->IsRight ^= 1;
-                            }
-                        } else if(Object->Tick > 0) {
-                            MoveEntity(Object);
-                        } else if(!IsPauseAttempt) {
-                            /*RandomMove*/
-                            const map *Map = &World.Maps[MapI];
-                            int Seed = rand();
-                            if(Seed % 64 == 0) {
-                                Object->Dir = Seed / 64 % 4;
-
-                                point NewPoint = GetFacingPoint(Object->Pos, Object->Dir);
-
-                                /*FetchQuadPropSingleMap*/
-                                int Quad = -1;
-                                int Prop = QUAD_PROP_SOLID;
-                                if(PointInMap(Map, NewPoint)) {
-                                    Quad = Map->Quads[NewPoint.Y][NewPoint.X];
-                                    Prop = World.QuadProps[Quad];
-                                }
-                                
-                                /*CheckForCollisions*/
-                                int WillCollide = WillObjectCollide(&World.Player, NewPoint);
-                                for(int I = 0; I < World.Maps[MapI].ObjectCount && !WillCollide; I++) {
-                                    const object *OtherObject = &World.Maps[MapI].Objects[I]; 
-                                    if(Object != OtherObject) {
-                                        WillCollide = WillObjectCollide(OtherObject, NewPoint); 
-                                    }
-                                } 
-
-                                /*StartMovingEntity*/
-                                if(Prop == QUAD_PROP_NONE && !WillCollide) {
-                                    Object->Tick = 32;
-                                    Object->IsMoving = 1;
-                                }
-                            }
-                        }
-                    }
-
-                    /*GetObjectRenderPos*/
-                    point QuadPt = {
-                        Object->Pos.X - World.Player.Pos.X + 72,
-                        Object->Pos.Y - World.Player.Pos.Y + 72
-                    };
-
-                    if(World.MapI != MapI) {
-                        switch(GetMapDir(World.Maps, World.MapI)) {
-                        case DIR_UP:
-                            QuadPt.Y -= World.Maps[MapI].Height * 16;
-                            break;
-                        case DIR_LEFT:
-                            QuadPt.X -= World.Maps[MapI].Width * 16;
-                            break;
-                        case DIR_DOWN:
-                            QuadPt.Y += World.Maps[World.MapI].Height * 16;
-                            break;
-                        case DIR_RIGHT:
-                            QuadPt.X += World.Maps[World.MapI].Width * 16;
-                            break;
-                        }
-                    }
-
-                    /*RenderObject*/
-                    if(ObjectInUpdateBounds(QuadPt) && SpriteI < 40) {
-                        sprite *SpriteQuad = &Sprites[SpriteI];
-                        UpdateAnimation(Object, SpriteQuad, QuadPt);
-                        SpriteI += 4;
-                    }
-                }
-            }
-
-            /*MutTileUpdate*/
-            int TickCycle = Tick / 32 % 9;
-            if(Tick % 16 == 0 && World.IsOverworld) {
-                /*FlowersUpdate*/
-                memcpy(World.TileData[3], FlowerData[TickCycle % 3], 64);
-
-                /*WaterUpdate*/
-                int TickMod = TickCycle < 5 ? TickCycle : 9 - TickCycle;
-                memcpy(World.TileData[20], WaterData[TickMod], 64);
-            }
-
-            /*UpdatePallete*/
-            if(GetState() != GS_TRANSITION && World.Player.Tick <= 0) {
-                int PalleteI = World.Maps[World.MapI].PalleteI;
-                memcpy(Bitmap.Colors, Palletes[PalleteI], sizeof(Palletes[PalleteI]));
-            }
+        if(IsWorldDisplayed) {
+            UpdateObjects();
+            MulTickUpdate();
+            UpdatePallete();
         }
 
         RenderTileMap(&World, ScrollX, ScrollY);
         RenderSprites(SpriteI);
-        RenderWindowMap(&World);
-        if(IsFullscreen) UpdateFullscreen(Window);
+        RenderWindowMap(WindowX, WindowY);
+        if(IsFullscreen) {
+            UpdateFullscreen(Window);
+        }
 
         EndFrame();
 

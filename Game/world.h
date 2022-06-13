@@ -54,6 +54,12 @@ typedef struct map {
     object Objects[256];
 } map;
 
+typedef struct data_path {
+    const char *Tile;
+    const char *Quad;
+    const char *Prop;
+} data_path; 
+
 typedef struct world {
     uint8_t TileData[256][64];
     uint8_t QuadProps[128];
@@ -65,6 +71,7 @@ typedef struct world {
     object Player;
 
     int IsOverworld;
+    const data_path *DataPath;
 } world;
 
 typedef struct quad_info {

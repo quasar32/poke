@@ -6,6 +6,7 @@
 uint8_t Pixels[BM_HEIGHT][BM_WIDTH];
 uint8_t TileMap[32][32];
 uint8_t SpriteData[256][64];
+uint8_t WindowData[256][64];
 sprite Sprites[40];
 
 bitmap Bitmap = {
@@ -19,7 +20,6 @@ bitmap Bitmap = {
         .biClrUsed = 4 
     }
 };
-
 
 void RenderSprites(int SpriteI) {
     for(int I = 0; I < SpriteI; I++) {
@@ -94,17 +94,25 @@ void RenderTileMap(const world *World, int ScrollX, int ScrollY) {
     }
 }
 
-void RenderWindowMap(const world *World) {
-    for(int PixelY = 0; PixelY < BM_HEIGHT; PixelY++) {
-        int PixelX = 0;
-        int SrcYDsp = (PixelY & 7) << 3;
-        int TileY = PixelY / 8;
+void RenderWindowMap(int WindowX, int WindowY) {
+    int PixelDY = 0;
+    for(int PixelY = WindowY; PixelY < BM_HEIGHT; PixelY++) {
+        int TileY = PixelDY / 8;
+        int SrcY = PixelDY & 7;
 
-        for(int TileX = 0; TileX < 20; TileX++) {
-            if(WindowMap[TileY][TileX]) {
-                memcpy(&Pixels[PixelY][PixelX], &World->TileData[WindowMap[TileY][TileX]][SrcYDsp], 8); 
+        int PixelDX = 0;
+        for(int PixelX = WindowX; PixelX < BM_WIDTH; PixelX++) {
+            int TileX = PixelDX / 8; 
+            int SrcX = PixelDX & 7;
+
+            int WindowTile = WindowMap[TileY][TileX];
+            if(WindowTile) {
+                int SrcDsp = SrcX + SrcY * 8;
+                Pixels[PixelY][PixelX] = WindowData[WindowTile][SrcDsp];
             }
-            PixelX += 8;
+
+            PixelDX++;
         }
+        PixelDY++;
     }
 }

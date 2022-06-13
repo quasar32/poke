@@ -5,15 +5,16 @@
 #include <stdbool.h>
 #include <stdio.h>
 
-#define LIST_HEAD_INIT(Name) {\
-    .Prev = &(Name),\
-    .Next = &(Name)\
+#define LIST_HEAD_INIT(Name) {  \
+    .Prev = &(Name),            \
+    .Next = &(Name)             \
 }
 
 #define LIST_HEAD(Name) list_node Name = LIST_HEAD_INIT(Name)
 
 #define LIST_ENTRY(Ptr, Type, Member) CONTAINER_OF(Ptr, Type, Member)
 #define LIST_FIRST_ENTRY(Ptr, Type, Member) LIST_ENTRY((Ptr)->Next, Type, Member)
+
 #define LIST_FOR_EACH(Pos, Head, Member)                            \
     for(                                                            \
         Pos = LIST_ENTRY((Head)->Next, __typeof(*Pos), Member);     \

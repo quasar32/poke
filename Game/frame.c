@@ -33,9 +33,9 @@ static int64_t CounterToMS(int64_t Counter, int64_t PerfFreq) {
 }
 
 BOOL CreateFrame(void) {
-    PerfFreq = QueryPerfFreq(),
-    BeginCounter = QueryPerfFreq(),
-    DeltaCounter = 0LL,
+    PerfFreq = QueryPerfFreq();
+    BeginCounter = QueryPerfCounter();
+    DeltaCounter = 0LL;
     PeriodCounter = (int64_t) (PerfFreq / 60);
 
     FARPROC Procs[2];

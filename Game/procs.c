@@ -9,19 +9,18 @@ HMODULE LoadProcs(
     FARPROC Procs[static ProcCount]
 ) {
     HMODULE Lib = LoadLibrary(Path); 
-    if(!Lib) goto out;
-
-    for(size_t I = 0; I < ProcCount; I++) {
+    for(size_t I = 0; I < ProcCount && Lib; I++) {
         Procs[I] = GetProcAddress(Lib, ProcNames[I]);
         if(!Procs[I]) {
             FreeLibrary(Lib);
             Lib = NULL;
-            break;
         }
     }
 
-out:
-    if(!Lib) memset(Procs, 0, ProcCount * sizeof(*Procs));
+    if(!Lib) {
+        memset(Procs, 0, ProcCount * sizeof(*Procs));
+    }
+
     return Lib;
 }
 
@@ -32,9 +31,9 @@ HMODULE LoadProcsVersioned(
     const char *ProcNames[static ProcCount],
     FARPROC Procs[static ProcCount]
 ) {
-    for(size_t I = 0; I < PathCount; I++) {
-        HMODULE Lib = LoadProcs(Paths[I], ProcCount, ProcNames, Procs);
-        if(Lib) return Lib;
+    HMODULE Lib = NULL;
+    for(size_t I = 0; I < PathCount && !Lib; I++) {
+        Lib = LoadProcs(Paths[I], ProcCount, ProcNames, Procs);
     }
-    return NULL;
+    return Lib;
 }

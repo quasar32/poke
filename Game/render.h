@@ -20,11 +20,12 @@ typedef union bitmap {
 extern uint8_t Pixels[BM_HEIGHT][BM_WIDTH];
 extern uint8_t TileMap[32][32];
 extern uint8_t SpriteData[256][64];
+extern uint8_t WindowData[256][64];
 extern sprite Sprites[40];
 extern bitmap Bitmap;
 
 void RenderSprites(int SpriteI);
 void RenderTileMap(const world *World, int ScrollX, int ScrollY);
-void RenderWindowMap(const world *World);
+void RenderWindowMap(int Window, int WindowY);
 
 #endif

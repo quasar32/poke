@@ -1,6 +1,7 @@
 #ifndef READ_BUFFER_H
 #define READ_BUFFER_H
 
+#include <stdbool.h>
 #include <stdint.h>
 
 #include "inventory.h"

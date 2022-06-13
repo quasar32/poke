@@ -1,15 +1,16 @@
 #include "audio.h"
 #include "procs.h"
 #include "read.h"
+#include "stb_vorbis.h"
 
 #define LE_RIFF 0x46464952 
 #define LE_WAVE 0x45564157 
 #define LE_FMT 0x20746D66 
 #define LE_DATA 0x61746164
 
-IXAudio2SourceVoice *MusicVoice;
-XAUDIO2_BUFFER Music[2];
-uint32_t MusicData[2][1024 * 1024 * 16];
+#define STREAM_BUFFER_COUNT 8
+#define STREAM_BUFFER_SAMPLE_COUNT 3200
+
 uint32_t MusicTick;
 int MusicI[2];
 sound Sound;
@@ -23,18 +24,120 @@ static const WAVEFORMATEX WaveFormat = {
     .wBitsPerSample = 16
 };
 
+static void STDMETHODCALLTYPE StreamOnBufferEnd(
+    [[maybe_unused]] IXAudio2VoiceCallback *This, 
+    void *Context
+) { 
+    xaudio2 *XAudio2 = Context;
+    SetEvent(XAudio2->BufferEndEvent);
+    if(!atomic_load(&XAudio2->IsPlaying)) {
+        IXAudio2SourceVoice_Stop(XAudio2->SourceVoice, 0, XAUDIO2_COMMIT_NOW);
+        IXAudio2SourceVoice_FlushSourceBuffers(XAudio2->SourceVoice);
+    }
+}
+void STDMETHODCALLTYPE StreamStub1(IXAudio2VoiceCallback *) {}
+void STDMETHODCALLTYPE StreamStub2(IXAudio2VoiceCallback *, void *) {}
+void STDMETHODCALLTYPE StreamStub3(IXAudio2VoiceCallback *, void *, HRESULT) {}
+void STDMETHODCALLTYPE StreamStub4(IXAudio2VoiceCallback *, UINT32) {}
+
+static IXAudio2VoiceCallbackVtbl StreamCallbackVTBL = {
+    .OnBufferEnd = StreamOnBufferEnd,
+    .OnBufferStart = StreamStub2,
+    .OnLoopEnd = StreamStub2,
+    .OnStreamEnd = StreamStub1,
+    .OnVoiceError = StreamStub3,
+    .OnVoiceProcessingPassEnd = StreamStub1,
+    .OnVoiceProcessingPassStart = StreamStub4
+};
+
 static const char *const MusicPaths[10] = { 
     "",
-    "01_title.wav",
-    "",
-    "03_pallettown.wav",
-    "",
-    "",
+    "Music/01_title.ogg",
+    "Music/02_oakspeech.ogg",
+    "Music/03_pallettown.ogg",
     "",
     "",
     "",
-    "09_route1.wav"
+    "",
+    "",
+    "Music/09_route1.ogg"
 };
+
+static void WaitForSamples(xaudio2 *XAudio2, HANDLE BufferEndEvent) {
+    XAUDIO2_VOICE_STATE VoiceState;
+    while(
+        IXAudio2SourceVoice_GetState(XAudio2->SourceVoice, &VoiceState, 0), 
+        VoiceState.BuffersQueued >= STREAM_BUFFER_COUNT - 1
+    ) {
+        WaitForSingleObject(BufferEndEvent, INFINITE);
+    }
+}
+
+static void WaitUntilEmpty(xaudio2 *XAudio2, HANDLE BufferEndEvent) {
+    XAUDIO2_VOICE_STATE VoiceState;
+    while(
+        IXAudio2SourceVoice_GetState(XAudio2->SourceVoice, &VoiceState, 0), 
+        VoiceState.BuffersQueued > 0
+    ) {
+        WaitForSingleObject(BufferEndEvent, INFINITE);
+    }
+}
+
+static DWORD StreamProc(LPVOID Ptr) {
+    xaudio2 *XAudio2 = Ptr; 
+    while(WaitForSingleObject(XAudio2->StreamStart, INFINITE) == WAIT_OBJECT_0) {
+        short Bufs[STREAM_BUFFER_COUNT][3200];
+        int BufI = 0;
+
+        while(atomic_load(&XAudio2->IsPlaying)) {
+            bool HasZero = false;
+            int TotalSampleCount = 0;
+            do {
+                short *CurBuf = &Bufs[BufI][TotalSampleCount];
+                int SampleCount = stb_vorbis_get_samples_short(
+                    XAudio2->Vorbis, 
+                    1, 
+                    &CurBuf,
+                    _countof(Bufs[BufI])
+                );
+                if(SampleCount == 0) {
+                    if(HasZero) {
+                        stb_vorbis_seek_start(XAudio2->Vorbis);
+                        HasZero = true;
+                    } else {
+                        SampleCount = STREAM_BUFFER_COUNT - TotalSampleCount;
+                        memset(CurBuf, 0, SampleCount * sizeof(short));
+                    }
+                }
+                TotalSampleCount += SampleCount;
+            } while(TotalSampleCount < STREAM_BUFFER_COUNT);
+
+            XAUDIO2_BUFFER XBuf = {
+                .Flags = XAUDIO2_END_OF_STREAM, 
+                .pAudioData = (BYTE *) &Bufs[BufI],
+                .AudioBytes = TotalSampleCount * 2, 
+                .pContext = XAudio2
+            }; 
+
+            if(
+                FAILED(IXAudio2SourceVoice_SubmitSourceBuffer(XAudio2->SourceVoice, &XBuf, NULL)) |
+                FAILED(IXAudio2SourceVoice_Start(XAudio2->SourceVoice, 0, 0))
+            ) {
+                break;
+            }
+
+            BufI++;
+            if(BufI >= (int) STREAM_BUFFER_COUNT) BufI = 0;
+
+            WaitForSamples(XAudio2, XAudio2->BufferEndEvent);
+        }
+        WaitUntilEmpty(XAudio2, XAudio2->BufferEndEvent);
+        stb_vorbis_close(XAudio2->Vorbis);
+        XAudio2->Vorbis = NULL;
+        SetEvent(XAudio2->StreamEnd);
+    }
+    return EXIT_SUCCESS;
+}
 
 BOOL InitCom(com *Com) {
     BOOL Success = FALSE;
@@ -101,6 +204,28 @@ BOOL InitXAudio2(xaudio2 *XAudio2) {
     ); 
     if(FAILED(MasterResult)) goto out;
 
+    XAudio2->StreamCallback.lpVtbl = &StreamCallbackVTBL;
+    HRESULT SourceResult = IXAudio2_CreateSourceVoice(
+        XAudio2->Engine, 
+        &XAudio2->SourceVoice,
+        &WaveFormat,
+        0,
+        XAUDIO2_DEFAULT_FREQ_RATIO,
+        &XAudio2->StreamCallback,
+        NULL,
+        NULL
+    );
+    if(FAILED(SourceResult)) goto out;
+
+    XAudio2->StreamStart = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if(!XAudio2->StreamStart) goto out;
+
+    XAudio2->StreamEnd = CreateEvent(NULL, FALSE, FALSE, NULL);
+    if(!XAudio2->StreamEnd) goto out;
+
+    XAudio2->StreamThread = CreateThread(NULL, 0, StreamProc, XAudio2, 0, 0);
+    if(!XAudio2->StreamThread) goto out;
+
     Success = TRUE;
 out:
     if(!Success) DestroyXAudio2(XAudio2);
@@ -108,87 +233,32 @@ out:
 }
 
 void DestroyXAudio2(xaudio2 *XAudio2) {
+    if(XAudio2->StreamThread) CloseHandle(XAudio2->StreamThread); 
+    if(XAudio2->StreamEnd) CloseHandle(XAudio2->StreamEnd);
+    if(XAudio2->StreamStart) CloseHandle(XAudio2->StreamStart);
     if(XAudio2->Engine) IXAudio2_Release(XAudio2->Engine);
     if(XAudio2->Library) FreeLibrary(XAudio2->Library);
     *XAudio2 = (xaudio2) {};
 }
 
-BOOL ReadWave(LPCSTR Path, XAUDIO2_BUFFER *XBuf, LPVOID Buf, SIZE_T BufSize) {
-    HANDLE FileHandle = CreateFile(
-        Path, 
-        GENERIC_READ, 
-        FILE_SHARE_READ, 
-        NULL, 
-        OPEN_EXISTING, 
-        0, 
-        NULL
-    );
-    if(FileHandle == INVALID_HANDLE_VALUE) {
-        return FALSE;
-    }
+BOOL ReadSound(LPCSTR Path, XAUDIO2_BUFFER *XBuf) {
+    int ChannelCount;
+    int SampleRate;
+    short *Samples;
 
     *XBuf = (XAUDIO2_BUFFER) {
         .Flags = XAUDIO2_END_OF_STREAM,
     };
 
-    struct {
-        DWORD idChunk;
-        DWORD cbChunk;
-        DWORD idFormat;
-        DWORD idSubChunk;
-        DWORD cbSubChunk;
-        WORD wFormatTag;
-        WORD nChannels;
-        DWORD nSamplesPerSec;
-        DWORD nAvgBytesPerSec;
-        WORD nBlockAlign;
-        WORD wBitsPerSample;
-        DWORD idDataChunk;
-        DWORD cbData;
-    } Header;
-
-    int Success = (
-        ReadObject(FileHandle, &Header, sizeof(Header)) &&
-
-        Header.idChunk == LE_RIFF &&
-        Header.idFormat == LE_WAVE &&
-        Header.idSubChunk == LE_FMT &&
-        Header.wFormatTag == WaveFormat.wFormatTag &&
-        Header.nChannels == WaveFormat.nChannels && 
-        Header.nSamplesPerSec == WaveFormat.nSamplesPerSec &&
-        Header.nBlockAlign == WaveFormat.nBlockAlign &&
-        Header.nAvgBytesPerSec == WaveFormat.nAvgBytesPerSec &&
-        Header.wBitsPerSample == WaveFormat.wBitsPerSample &&
-        Header.idDataChunk == LE_DATA &&
-
-        Header.cbData < BufSize &&
-        ReadObject(FileHandle, Buf, Header.cbData)
-    );
-    if(Success) {
-        XBuf->pAudioData = Buf; 
-        XBuf->AudioBytes = Header.cbData; 
+    int SampleCount = stb_vorbis_decode_filename(Path, &ChannelCount, &SampleRate, &Samples);
+    if(SampleCount < 0) {
+        __builtin_printf("Failed %s\n", Path);
+        return FALSE;
     }
-
-    CloseHandle(FileHandle);
-    return Success;
+    XBuf->pAudioData = (BYTE *) Samples;
+    XBuf->AudioBytes = SampleCount * 2;
+    return TRUE; 
 }
-
-BOOL ReadMusic(size_t PathI, int I) {
-    const char *Path = (PathI < _countof(MusicPaths) ? MusicPaths[PathI] : "");
-    MusicI[I] = PathI;
-    Music[I].LoopCount = XAUDIO2_LOOP_INFINITE;
-    return ReadWave(Path, &Music[I], MusicData[I], sizeof(MusicData[I]));
-} 
-
-BOOL ReadSound(LPCSTR Path, XAUDIO2_BUFFER *XBuf) {
-    static uint32_t WaveData[1024 * 1024];
-    static size_t WaveIndex; 
-
-    BOOL Success = ReadWave(Path, XBuf, &WaveData[WaveIndex], sizeof(WaveData) - WaveIndex * sizeof(*WaveData));
-    WaveIndex += (XBuf->AudioBytes + 3) >> 2;
-    return Success; 
-}
-
 
 BOOL PlayWave(IXAudio2SourceVoice *Voice, const XAUDIO2_BUFFER *Buffer) { 
     return (
@@ -198,13 +268,21 @@ BOOL PlayWave(IXAudio2SourceVoice *Voice, const XAUDIO2_BUFFER *Buffer) {
     );
 }
 
-BOOL PlayMusic(int I) {
-    return (
-        MusicVoice &&
-        SUCCEEDED(IXAudio2SourceVoice_Stop(MusicVoice, 0, XAUDIO2_COMMIT_NOW)) &&
-        SUCCEEDED(IXAudio2SourceVoice_FlushSourceBuffers(MusicVoice)) &&
-        PlayWave(MusicVoice, &Music[I])
-    );
+static void StopMusic(xaudio2 *XAudio2) {
+    if(atomic_load(&XAudio2->IsPlaying)) { 
+        atomic_store(&XAudio2->IsPlaying, false);
+        WaitForSingleObject(XAudio2->StreamEnd, INFINITE);
+    }
+}
+
+BOOL PlayMusic(xaudio2 *XAudio2, int MusicI) {
+    StopMusic(XAudio2);
+    const char *Path = MusicPaths[MusicI];
+    XAudio2->Vorbis = stb_vorbis_open_filename(Path, NULL, NULL);
+    if(!XAudio2->Vorbis) return false;
+    atomic_store(&XAudio2->IsPlaying, true);
+    SetEvent(XAudio2->StreamStart);
+    return true;
 }
 
 HRESULT SetVolume(IXAudio2SourceVoice *Voice, float Volume) {

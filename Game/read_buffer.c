@@ -46,7 +46,7 @@ void ReadBufferPopInventory(read_buffer *ReadBuffer, inventory *Inventory) {
     Inventory->ItemCount = MinInt(ReadBufferPopByte(ReadBuffer), Inventory->ItemCapacity);
     for(int I = 0; I < Inventory->ItemCount; I++) {
         Inventory->Items[I].ID = ReadBufferPopByte(ReadBuffer);
-        Inventory->Items[I].Count = ReadBufferPopByte(ReadBuffer);
+        Inventory->Items[I].Count = ReadBufferPopByte(ReadBuffer) % 100;
     }
 }
 

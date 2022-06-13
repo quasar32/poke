@@ -1,11 +1,15 @@
 #ifndef AUDIO_H
 #define AUDIO_H
 
+#include <stdatomic.h>
+#include <stdbool.h>
 #include <stdint.h>
 #include <windows.h>
 
 #define COBJMACROS
 #include <xaudio2.h>
+
+#include "stb_vorbis.h"
 
 typedef HRESULT WINAPI xaudio2_create(IXAudio2 **, UINT32, XAUDIO2_PROCESSOR);
 typedef void WINAPI co_uninitialize(void);
@@ -22,9 +26,20 @@ typedef struct xaudio2 {
     xaudio2_create *Create;
     IXAudio2 *Engine;
     IXAudio2MasteringVoice *MasterVoice;
+
+    IXAudio2VoiceCallback StreamCallback;
+    IXAudio2SourceVoice *SourceVoice;
+
+    HANDLE StreamStart;
+    HANDLE StreamEnd;
+    HANDLE StreamThread; 
+    HANDLE BufferEndEvent;
+
+    stb_vorbis *Vorbis;
+    _Atomic bool IsPlaying;
 } xaudio2;
 
-typedef struct sound{
+typedef struct sound {
     IXAudio2SourceVoice *Voice;
     XAUDIO2_BUFFER Collision;
     XAUDIO2_BUFFER Ledge; 
@@ -38,25 +53,20 @@ typedef struct sound{
     XAUDIO2_BUFFER WithdrawDeposit; 
 } sound;
 
-
 BOOL InitCom(com *Com);
 void DestroyCom(com *Com);
 BOOL InitXAudio2(xaudio2 *XAudio2);
 void DestroyXAudio2(xaudio2 *XAudio2);
-BOOL ReadWave(LPCSTR Path, XAUDIO2_BUFFER *XBuf, LPVOID Buf, SIZE_T BufSize);
-BOOL ReadMusic(size_t PathI, int I);
 BOOL ReadSound(LPCSTR Path, XAUDIO2_BUFFER *XBuf);
 BOOL PlayWave(IXAudio2SourceVoice *Voice, const XAUDIO2_BUFFER *Buffer);
-BOOL PlayMusic(int I);
+BOOL PlayMusic(xaudio2 *XAudio2, int I);
 HRESULT SetVolume(IXAudio2SourceVoice *Voice, float Volume);
 int GetQueueCount(IXAudio2SourceVoice *Voice);
 HRESULT CreateGenericVoice(IXAudio2 *Engine, IXAudio2SourceVoice **Voice);
+bool PlayOgg(xaudio2 *XAudio2, int MusicI);
 
-extern IXAudio2SourceVoice *MusicVoice;
-extern XAUDIO2_BUFFER Music[2];
-extern uint32_t MusicData[2][1024 * 1024 * 16];
 extern uint32_t MusicTick;
-extern int MusicI[2];
 extern sound Sound;
+extern int MusicI[2];
 
 #endif

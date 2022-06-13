@@ -4,11 +4,12 @@
 
 #include "window_map.h"
 #include "scalar.h"
+#include "str.h"
 #include "input.h"
 
 const rect BottomTextRect = {0, 12, 20, 18};
 
-uint8_t WindowMap[18][20];
+uint8_t WindowMap[32][32];
 
 menu MainMenu = { 
     .WindowTask.Type = TT_MENU,
@@ -30,7 +31,7 @@ menu ContinueMenu = {
 
 menu StartMenu = {
     .WindowTask.Type = TT_MENU,
-    .Text = "POK" "\xE9" "MON\nITEM\nRED\nSAVE\nOPTION\nEXIT", 
+    .Text = "POKéMON\nITEM\nRED\nSAVE\nOPTION\nEXIT", 
     .Rect = {10, 0, 20, 14},
     .TextY = 2,
     .EndI = 6,
@@ -79,51 +80,57 @@ const char *DeferedMessage;
 
 void PlaceTextBox(rect Rect) {
     /*HeadRow*/
-    WindowMap[Rect.Top][Rect.Left] = 96;
-    memset(&WindowMap[Rect.Top][Rect.Left + 1], 97, Rect.Right - Rect.Left - 2);
-    WindowMap[Rect.Top][Rect.Right - 1] = 98;
+    WindowMap[Rect.Top][Rect.Left] = MT_TOP_LEFT;
+    memset(&WindowMap[Rect.Top][Rect.Left + 1], MT_MIDDLE, Rect.Right - Rect.Left - 2);
+    WindowMap[Rect.Top][Rect.Right - 1] = MT_TOP_RIGHT;
 
     /*BodyRows*/
     for(int Y = Rect.Top + 1; Y < Rect.Bottom - 1; Y++) {
-        WindowMap[Y][Rect.Left] = 99;
+        WindowMap[Y][Rect.Left] = MT_CENTER_LEFT;
         memset(&WindowMap[Y][Rect.Left + 1], MT_BLANK, Rect.Right - Rect.Left - 2);
-        WindowMap[Y][Rect.Right - 1] = 101;
+        WindowMap[Y][Rect.Right - 1] = MT_CENTER_RIGHT;
     }
 
     /*FootRow*/
-    WindowMap[Rect.Bottom - 1][Rect.Left] = 100;
-    memset(&WindowMap[Rect.Bottom - 1][Rect.Left + 1], 97, Rect.Right - Rect.Left - 2);
-    WindowMap[Rect.Bottom - 1][Rect.Right - 1] = 102;
+    WindowMap[Rect.Bottom - 1][Rect.Left] = MT_BOTTOM_LEFT;
+    memset(&WindowMap[Rect.Bottom - 1][Rect.Left + 1], MT_MIDDLE, Rect.Right - Rect.Left - 2);
+    WindowMap[Rect.Bottom - 1][Rect.Right - 1] = MT_BOTTOM_RIGHT;
 }
 
-int CharToTile(int Char) {
-    int Output = Char;
-    if(Output == '*') {
+int CharToTile(const char **OutStr) {
+    const char *Str = *OutStr;
+    int Output = MT_BLANK;
+    if(*Str == '*') {
         Output = MT_TIMES;
-    } else if(Output == '.') {
-        Output = 175;
-    } else if(Output >= '0' && Output <= ':') {
-        Output += 103 - '0';
-    } else if(Output >= 'A' && Output <= 'Z') {
-        Output += 114 - 'A';
-    } else if(Output >= 'a' && Output <= 'z') {
-        Output += 140 - 'a';
-    } else if(Output == '!') {
-        Output = 168;
-    } else if(Output == '\xE9') {
-        Output = 166;
-    } else if(Output == '\'') {
-        Output = 169;
-    } else if(Output == '~') {
-        Output = 172;
-    } else if(Output == '-') {
-        Output = 170;
-    } else if(Output == ',') {
-        Output = 173; 
-    } else if(Output == '?') {
+    } else if(*Str == '.') {
+        Output = MT_PERIOD;
+    } else if(*Str >= '0' && *Str <= ':') {
+        Output = *Str + MT_ZERO - '0';
+    } else if(*Str >= 'A' && *Str <= 'Z') {
+        Output = *Str + MT_CAPITAL_A - 'A';
+    } else if(*Str >= 'a' && *Str <= 'z') {
+        Output = *Str + MT_LOWERCASE_A - 'a';
+    } else if(*Str == '\xE9') {
+        Output = MT_ACCENTED_E;
+    } else if(*Str == '!') {
+        Output = MT_EXCLAMATION_POINT;
+    } else if(*Str == '\'') {
+        Output = MT_SLASH;
+    } else if(*Str == '-') {
+        Output = MT_DASH;
+    } else if(*Str == '~') {
+        Output = MT_TIDLE;
+    } else if(*Str == ',') {
+        Output = MT_COMMA; 
+    } else if(*Str == '?') {
         Output = MT_QUESTION; 
     } else {
         Output = MT_BLANK;
+    } 
+    (*OutStr)++;
+    if(DoesStartStringMatch(Str, "é")) {
+        Output = MT_ACCENTED_E; 
+        (*OutStr)++;
     }
     return Output;
 }
@@ -131,18 +138,20 @@ int CharToTile(int Char) {
 void PlaceText(point TileMin, const char *Text) {
     int X = TileMin.X;
     int Y = TileMin.Y;
-    for(int I = 0; Text[I] != '\0'; I++) {
-        switch(Text[I]) {
+    while(*Text) {
+        switch(*Text) {
         case '\n':
             X = TileMin.X;
             Y += 2;
+            Text++;
             break;
         case '\r':
             X = TileMin.X;
             Y += 3; 
+            Text++;
             break;
         default:
-            WindowMap[Y][X] = CharToTile(Text[I]);
+            WindowMap[Y][X] = CharToTile(&Text);
             X++;
         }
     }
