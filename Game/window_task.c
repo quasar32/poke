@@ -6,9 +6,9 @@
 #include "window_map.h"
 #include "window_task.h"
 
-bool HasTextBox;
+BOOL HasTextBox;
 
-LIST_HEAD(WindowTaskHead);
+static LIST_HEAD(WindowTaskHead);
 
 static void ExecuteWindowTask(window_task *Task) {
     switch(Task->Type) {
@@ -38,7 +38,7 @@ static void ExecuteWindowTask(window_task *Task) {
         break;
     case TT_DISPLAY:
         {
-            StartDisplayItem(Inventory); 
+            StartDisplayItem(g_Inventory); 
         }
         break;
     } 
@@ -56,7 +56,7 @@ void PushWindowTask(window_task *Task) {
     case TT_DISPLAY:
         DisplayItem = (item) {
             .Count = 1, 
-            .ID = Inventory->Items[Inventory->ItemSelect].ID 
+            .ID = g_Inventory->Items[g_Inventory->ItemSelect].ID 
         };
         break;
     default:
@@ -67,7 +67,7 @@ void PushWindowTask(window_task *Task) {
 
 
 window_task *PopWindowTask(void) {
-    list_node *Node = ListPop(&WindowTaskHead);
+    list_head *Node = ListPop(&WindowTaskHead);
     return LIST_ENTRY(Node, window_task, Node);
 }
 

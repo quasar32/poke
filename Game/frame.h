@@ -6,16 +6,16 @@
 #include <windows.h>
 
 __attribute__((constructor))
-BOOL CreateFrame(void);
+BOOL CreateFrameTimer(void);
 
 __attribute__((destructor))
-void DestroyFrame(void);
+void DestroyFrameTimer(void);
 
-void StartFrame(void);
+void StartFrameTimer(void);
 
-void EndFrame(void);
+void EndFrameTimer(void);
 
-float GetFrameDelta(void);
+float GetFrameTimerDelta(void);
 
 int64_t QueryPerfFreq(void);
 int64_t QueryPerfCounter(void);

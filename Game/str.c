@@ -1,3 +1,5 @@
+#include <string.h>
+
 #include "str.h"
 
 bool DoesStartStringMatch(const char *Dst, const char *Src) {
@@ -7,4 +9,19 @@ bool DoesStartStringMatch(const char *Dst, const char *Src) {
         }
     }
     return true; 
+}
+
+const char *StrMovePastSpan(const char *Str, const char *Span) {
+    while(*Span != '\0') {
+        if(*Str != *Span) {
+            return NULL;
+        }
+        Str++;
+        Span++;
+    }
+    return Str;
+}
+
+int AreStringsEqual(const char *A, const char *B) {
+    return A && B ? strcmp(A, B) == 0 : A != B;
 }

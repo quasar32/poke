@@ -1,5 +1,79 @@
 #include <stdio.h>
-#include "shared.h"
+#include <stdint.h>
+#include <windows.h>
+
+#define SizeOfQuadProps 128 
+#define SizeOfQuadData 512 
+#define SizeOfQuadMapBytes 65536
+#define SizeOfCompressedTile 16
+
+#define AllocateStatic(Size) ({\
+    static uint8_t StaticArray_[Size];\
+    (void *) StaticArray_;\
+})
+
+/*Generic Math Functions*/
+#define Swap(A, B) do {\
+    typeof(A) A_ = (A);\
+    typeof(A) B_ = (B);\
+    typeof(*A) Tmp = *A_;\
+    *A_ = *B_;\
+    *B_ = Tmp;\
+} while(0)
+
+#define Min(A, B) ({\
+    typeof(A) A_ = (A);\
+    typeof(A) B_ = (B);\
+    A_ < B_ ? A_ : B_;\
+})
+
+#define Max(A, B) ({\
+    typeof(A) A_ = (A);\
+    typeof(A) B_ = (B);\
+    A_ > B_ ? A_ : B_;\
+})
+
+#define Clamp(Value, Bottom, Top) ({\
+    typeof(Value) Value_ = (Value);\
+    typeof(Value) Bottom_ = (Bottom);\
+    typeof(Value) Top_ = (Top);\
+    Value_ = Max(Value_, Bottom_);\
+    Value_ = Min(Value_, Top_);\
+    Value_;\
+})
+
+#define RoundDown(Value, Round) ({\
+    typeof(Value) Value_ = (Value);\
+    typeof(Value) Round_ = (Round);\
+    Value_ -= Value_ % Round_;\
+    Value_;\
+})
+
+#define Abs(Value) ({\
+    typeof(Value) Value_ = (Value);\
+    Value_ < 0 ? -Value_ : Value_;\
+})
+
+#define InitQuadMap\
+    (array_rect) {\
+        0,\
+        0,\
+        AllocateStatic(SizeOfQuadMapBytes)\
+    }
+
+/*Conversion Macros*/
+#define CoordToQuad(Coord) ((Coord) >> 4)
+
+#define RunLengthPacketFlag 128
+
+#define TileLength 8
+#define TileSize 64
+
+typedef struct array_rect {
+    int Width;
+    int Height;
+    uint8_t *Bytes;
+} array_rect;
 
 static int GetPair(int ColorIndex) {
     switch(ColorIndex) {
@@ -29,6 +103,93 @@ static int MatchQuad(int TileMapWidth, uint8_t *QuadData, uint8_t *Tile) {
     return Result;
 }
 
+static uint32_t WriteAll(const char *Path, void *Bytes, uint32_t BytesToWrite) {
+    DWORD BytesWritten = 0;
+    HANDLE FileHandle = CreateFile(Path, GENERIC_WRITE, FILE_SHARE_READ, NULL, 
+            CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    if(FileHandle != INVALID_HANDLE_VALUE) {
+        WriteFile(FileHandle, Bytes, BytesToWrite, &BytesWritten, NULL);
+        CloseHandle(FileHandle);
+    }
+    return BytesWritten;
+}
+
+
+static uint8_t *WriteCompressedQuad(uint8_t *RunPtr, int Quad, int Repeat) {
+    if(Repeat == 0) {
+        *RunPtr++ = Quad;
+    } else {
+        *RunPtr++ = Quad | RunLengthPacketFlag;
+        *RunPtr++ = Repeat;
+    }
+    return RunPtr;
+}
+
+static uint32_t WriteQuadMap(const char *Path, array_rect *QuadMap) {
+    int QuadPrev = QuadMap->Bytes[0];
+    uint8_t Repeat = 0;
+    uint8_t RunData[65536];
+    uint8_t *RunPtr = RunData;
+    *RunPtr++ = QuadMap->Width - 1;
+    *RunPtr++ = QuadMap->Height - 1;
+
+    int QuadSize = QuadMap->Width * QuadMap->Height;
+    for(int QuadIndex = 1; QuadIndex < QuadSize; QuadIndex++) {
+        int QuadCur = QuadMap->Bytes[QuadIndex];
+        if(Repeat != 255 && QuadPrev == QuadCur) {
+            Repeat++;
+        } else if(RunPtr - RunData >= 65535) { 
+            /*Not 65536 in order because of 2-byte copy*/
+            return 0;
+        } else {
+            RunPtr = WriteCompressedQuad(RunPtr, QuadPrev, Repeat);
+            Repeat = 0;
+        }
+        QuadPrev = QuadCur;
+    }
+
+    RunPtr = WriteCompressedQuad(RunPtr, QuadPrev, Repeat);
+
+    if(RunPtr - RunData >= 65536) {
+        return 0;
+    }
+    *RunPtr++ = 0;
+
+    if(RunPtr - RunData >= 65536) {
+        return 0;
+    }
+    uint8_t *Count = RunPtr++;
+    *Count = 0;
+
+    if(RunPtr - RunData >= 65536) {
+        return 0;
+    }
+
+    Count = RunPtr++;
+    *Count = 0;
+
+    if(RunPtr - RunData >= 65536) {
+        return 0;
+    }
+
+    Count = RunPtr++;
+    *Count = 0;
+
+    if(RunPtr - RunData >= 65536) {
+        return 0;
+    }
+
+    *RunPtr++ = 0;
+
+    if(RunPtr - RunData >= 65536) {
+        return 0;
+    }
+
+    *RunPtr++ = 0;
+
+    return WriteAll(Path, RunData, RunPtr - RunData);
+}
+
 static void TranslateTilesToQuads(array_rect *QuadMap, array_rect *TileMap, uint8_t *QuadData) {
     QuadMap->Width = TileMap->Width / 2;
     QuadMap->Height = TileMap->Height / 2;
@@ -43,6 +204,44 @@ static void TranslateTilesToQuads(array_rect *QuadMap, array_rect *TileMap, uint
         }
         TileRow += TileMap->Width * 2;
     }
+}
+static uint32_t ReadAll(const char *Path, void *Bytes, uint32_t BytesToRead) {
+    DWORD BytesRead = 0;
+    HANDLE FileHandle = CreateFile(Path, GENERIC_READ, FILE_SHARE_READ, NULL, OPEN_EXISTING, 0, NULL);
+    if(FileHandle != INVALID_HANDLE_VALUE) {
+        ReadFile(FileHandle, Bytes, BytesToRead, &BytesRead, NULL);
+        CloseHandle(FileHandle);
+    }
+    return BytesRead;
+}
+
+static int ReadTileData(const char *Path, uint8_t *TileData, int MaxTileCount) {
+    int SizeOfCompressedTileData = MaxTileCount * SizeOfCompressedTile;
+
+    uint8_t CompData[SizeOfCompressedTileData];
+    int BytesRead = ReadAll(Path, CompData, sizeof(CompData));
+    int TilesRead = BytesRead / SizeOfCompressedTile;
+    int BytesValid = TilesRead * SizeOfCompressedTile;
+
+    uint8_t *CompPtr = CompData;
+    uint8_t *TilePtr = TileData;
+    for(int ByteIndex = 0; ByteIndex < BytesValid; ByteIndex++) {
+        uint8_t Comp = *CompPtr++;
+        *TilePtr++ = (Comp >> 6) & 3;
+        *TilePtr++ = (Comp >> 4) & 3;
+        *TilePtr++ = (Comp >> 2) & 3;
+        *TilePtr++ = (Comp >> 0) & 3;
+    }
+    return TilesRead;
+}
+
+static void ReadQuadData(const char *Path, uint8_t *QuadData) {
+    uint32_t TilesRead = ReadAll(Path, QuadData, SizeOfQuadData);
+    uint8_t *Tile = QuadData;
+    for(int TileIndex = 0; TileIndex < TilesRead; TileIndex++) {
+        *Tile++ = Clamp(*Tile, 0, 95);
+    }
+    memset(QuadData + TilesRead, 0, SizeOfQuadData - TilesRead);
 }
 
 int main(int argc, char *argv[]) {
@@ -148,6 +347,14 @@ int main(int argc, char *argv[]) {
         struct array_rect QuadMap = InitQuadMap;
         TranslateTilesToQuads(&QuadMap, &TileMap, QuadData);
         WriteQuadMap(argv[2], &QuadMap);
+    } else if(strcmp(argv[3], "Trainer") == 0) {
+        FILE *File = fopen(argv[2], "wb");
+        uint8_t TrainerWidth = Bitmap.bmWidth >> 3; 
+        uint8_t TrainerHeight = Bitmap.bmHeight >> 3; 
+        uint8_t TrainerSize = TrainerWidth | (TrainerHeight << 4); 
+        fwrite(&TrainerSize, 1, 1, File); 
+        fwrite(Output, OutputSize, 1, File); 
+        fclose(File);
     } else {
         fputs("Invalid type option\n", stderr);
         return 1;

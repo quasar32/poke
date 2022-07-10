@@ -3,23 +3,33 @@
 #include "read.h"
 #include "render.h"
 #include "scalar.h"
+#include "pallete.h"
 #include "world.h"
 
-static const int8_t OverworldMusic[WORLD_HEIGHT][WORLD_WIDTH] = {
-    {-1},
-    {9},
-    {3},
-    {-1}
-};
+#define OUT_OF_RANGE(Ary, I) ((size_t) (I)) >= _countof((Ary))
 
-static const char OverworldMapPaths[WORLD_HEIGHT][WORLD_WIDTH][16] = {
+typedef struct data_path {
+    const char *Tile;
+    const char *Quad;
+    const char *Prop;
+} data_path; 
+
+static uint8_t g_FlowerData[3][64];
+static uint8_t g_WaterData[7][64];
+    
+static int64_t g_Tick;
+static int64_t g_TickCycle;
+
+static const char g_OverworldMapPaths[WORLD_HEIGHT][WORLD_WIDTH][16] = {
     {"VirdianCity"},
     {"Route1"},
     {"PalleteTown"},
     {"Route21"}
 };
 
-static const data_path DataPaths[] = {
+static const data_path *g_DataPath;
+
+static const data_path g_DataPaths[] = {
     {
         .Tile = "TileData00",
         .Quad = "QuadData00",
@@ -32,9 +42,37 @@ static const data_path DataPaths[] = {
     }
 };
 
-/*TODO: Move in string library*/
-static int AreStringsEqual(const char *A, const char *B) {
-    return A && B ? strcmp(A, B) == 0 : A != B;
+static uint8_t g_QuadProps[128];
+static uint8_t g_QuadData[128][4];
+
+static BOOL g_IsWorldActive;
+
+const int8_t OverworldMusic[WORLD_HEIGHT][WORLD_WIDTH] = {
+    {MUS_INVALID},
+    {MUS_ROUTE_1},
+    {MUS_PALLETE_TOWN},
+    {MUS_INVALID}
+};
+
+BOOL g_InOverworld;
+object g_Player;
+
+static void UpdateFlowerTiles(void) {
+    memcpy(g_TileData[3], g_FlowerData[g_TickCycle % 3], 64);
+}
+
+static void UpdateWaterTiles(void) {
+    int TickMod = g_TickCycle < 5 ? g_TickCycle : 9 - g_TickCycle;
+    memcpy(g_TileData[20], g_WaterData[TickMod], 64);
+}
+
+static void MulTickUpdate(void) {
+    if(g_InOverworld && g_Tick % 32 == 0) {
+        g_TickCycle = g_Tick / 32 % 9;
+        UpdateFlowerTiles();
+        UpdateWaterTiles();
+    }
+    g_Tick++;
 }
 
 static int CorrectTileCoord(int TileCoord) {
@@ -42,10 +80,43 @@ static int CorrectTileCoord(int TileCoord) {
 }
 
 static void SetToTiles(int TileX, int TileY, const uint8_t Set[4]) {
-    TileMap[TileY][TileX] = Set[0];
-    TileMap[TileY][TileX + 1] = Set[1];
-    TileMap[TileY + 1][TileX] = Set[2];
-    TileMap[TileY + 1][TileX + 1] = Set[3];
+    g_TileMap[TileY][TileX] = Set[0];
+    g_TileMap[TileY][TileX + 1] = Set[1];
+    g_TileMap[TileY + 1][TileX] = Set[2];
+    g_TileMap[TileY + 1][TileX + 1] = Set[3];
+}
+
+static BOOL WillNPCCollide(map *Map, object *Object, point NewPoint) {
+    if(WillObjectCollide(&g_Player, NewPoint)) {
+        return TRUE;
+    }
+    for(int I = 0; I < Map->ObjectCount; I++) {
+        const object *OtherObject = &Map->Objects[I]; 
+        if(Object != OtherObject && WillObjectCollide(OtherObject, NewPoint)) { 
+            return TRUE;
+        }
+    } 
+    return FALSE;
+}
+
+static void ReadTileSet(read_buffer *ReadBuffer) {
+    int PathI = ReadBufferPopByte(ReadBuffer);
+    if(OUT_OF_RANGE(g_DataPaths, PathI)) {
+        return;
+    } else {
+        const data_path *NewDataPath = &g_DataPaths[PathI]; 
+        if(g_DataPath != NewDataPath) {
+            g_DataPath = NewDataPath;
+            ReadTileData(g_DataPath->Tile, g_TileData, 96);
+            ReadAll(g_DataPath->Quad, g_QuadData, sizeof(g_QuadData)); 
+            ReadAll(g_DataPath->Prop, g_QuadProps, sizeof(g_QuadProps));
+        }
+    }
+}
+
+static void ReadPalleteI(read_buffer *ReadBuffer, map *Map) {
+    Map->PalleteI = ReadBufferPopByte(ReadBuffer);
+    Map->PalleteI = OUT_OF_RANGE(g_Palletes, Map->PalleteI) ? 0 : Map->PalleteI; 
 }
 
 int GetMapDir(const map Maps[2], int Map) {
@@ -68,20 +139,6 @@ int PointInWorld(point Pt) {
     int InX = Pt.X >= 0 && Pt.X < WORLD_WIDTH;
     int InY = Pt.Y >= 0 && Pt.Y < WORLD_HEIGHT;
     return InX && InY;
-}
-
-void ReadTileData(const char *Path, uint8_t TileData[][64], int TileCount) {
-    uint8_t CompData[256][16] = {0};
-    ReadAll(Path, CompData, TileCount * 16);
-
-    for(int TileI = 0; TileI < TileCount; TileI++) {
-        for(int I = 0; I < 16; I++) {
-            TileData[TileI][I * 4] = (CompData[TileI][I] >> 6) & 3;
-            TileData[TileI][I * 4 + 1] = (CompData[TileI][I] >> 4) & 3;
-            TileData[TileI][I * 4 + 2] = (CompData[TileI][I] >> 2) & 3;
-            TileData[TileI][I * 4 + 3] = CompData[TileI][I] & 3;
-        }
-    }
 }
 
 void ReadMap(world *World, int MapI, const char *Path) {
@@ -154,25 +211,15 @@ void ReadMap(world *World, int MapI, const char *Path) {
         ReadBufferPopString(&ReadBuffer, Map->Doors[I].Path);
     }
 
-    /*ReadTileSet*/
-    const data_path *NewDataPath = &DataPaths[ReadBufferPopByte(&ReadBuffer) % _countof(DataPaths)]; 
-    if(World->DataPath != NewDataPath) {
-        World->DataPath = NewDataPath;
-        ReadTileData(NewDataPath->Tile, World->TileData, 96);
-        ReadAll(NewDataPath->Quad, World->QuadData, sizeof(World->QuadData)); 
-        ReadAll(NewDataPath->Prop, World->QuadProps, sizeof(World->QuadProps));
-    }
-
-    /*ReadPalleteI*/
-    Map->PalleteI = ReadBufferPopByte(&ReadBuffer);
+    ReadTileSet(&ReadBuffer);
+    ReadPalleteI(&ReadBuffer, Map);
 }
 
 void ReadOverworldMap(world *World, int MapI, point Load) { 
-    const char *MapPath = OverworldMapPaths[Load.Y][Load.X]; 
+    const char *MapPath = g_OverworldMapPaths[Load.Y][Load.X]; 
     if(PointInWorld(Load) && MapPath) {
         ReadMap(World, MapI, MapPath);
-        MusicI[MapI] = OverworldMusic[Load.Y][Load.X];
-        World->IsOverworld = 1;
+        g_InOverworld = 1;
 
         map *Map = &World->Maps[MapI];
         Map->Loaded = Load; 
@@ -182,14 +229,14 @@ void ReadOverworldMap(world *World, int MapI, point Load) {
 void GetLoadedPoint(world *World, int MapI, const char *MapPath) {
     for(int Y = 0; Y < WORLD_HEIGHT; Y++) {
         for(int X = 0; X < WORLD_WIDTH; X++) {
-            if(AreStringsEqual(OverworldMapPaths[Y][X], MapPath)) {
+            if(strcmp(g_OverworldMapPaths[Y][X], MapPath) == 0) {
                 World->Maps[MapI].Loaded = (point) {X, Y};
-                World->IsOverworld = 1;
+                g_InOverworld = 1;
                 return;
             } 
         }
     }
-    World->IsOverworld = 0;
+    g_InOverworld = 0;
 }
 
 quad_info GetQuadInfo(const world *World, point Point) {
@@ -234,7 +281,7 @@ quad_info GetQuadInfo(const world *World, point Point) {
 
     if(PointInMap(&World->Maps[QuadInfo.MapI], QuadInfo.Point)) {
         QuadInfo.Quad = World->Maps[QuadInfo.MapI].Quads[QuadInfo.Point.Y][QuadInfo.Point.X];
-        QuadInfo.Prop = World->QuadProps[QuadInfo.Quad];
+        QuadInfo.Prop = g_QuadProps[QuadInfo.Quad];
     } else {
         QuadInfo.Quad = World->Maps[World->MapI].DefaultQuad;
         QuadInfo.Prop = QUAD_PROP_SOLID;
@@ -251,7 +298,7 @@ int LoadAdjacentMap(world *World, int DeltaX, int DeltaY) {
         point OldMapPt = World->Maps[!World->MapI].Loaded;
         if(
             PointInWorld(NewMapPt) &&
-            OverworldMapPaths[NewMapPt.X][NewMapPt.Y] && 
+            g_OverworldMapPaths[NewMapPt.X][NewMapPt.Y] && 
             !EqualPoints(NewMapPt, OldMapPt)
         ) {
             ReadOverworldMap(World, !World->MapI, NewMapPt);
@@ -267,7 +314,7 @@ void PlaceMap(const world *World, point TileMin, rect QuadRect) {
         int TileX = CorrectTileCoord(TileMin.X);
         for(int QuadX = QuadRect.Left; QuadX < QuadRect.Right; QuadX++) {
             int Quad = GetQuadInfo(World, (point) {QuadX, QuadY}).Quad;
-            SetToTiles(TileX, TileY, World->QuadData[Quad]); 
+            SetToTiles(TileX, TileY, g_QuadData[Quad]); 
             TileX = (TileX + 2) % 32;
         }
         TileY = (TileY + 2) % 32;
@@ -276,8 +323,8 @@ void PlaceMap(const world *World, point TileMin, rect QuadRect) {
 
 void PlaceViewMap(const world *World, int IsDown) {
     rect QuadRect = {
-        .Left = World->Player.Pos.X / 16 - 4,
-        .Top = World->Player.Pos.Y / 16 - 4,
+        .Left = g_Player.Pos.X / 16 - 4,
+        .Top = g_Player.Pos.Y / 16 - 4,
         .Right = QuadRect.Left + 10,
         .Bottom = QuadRect.Top + 9 + !!IsDown
     };
@@ -285,11 +332,74 @@ void PlaceViewMap(const world *World, int IsDown) {
     PlaceMap(World, TileMin, QuadRect);
 }
 
-void SetPlayerToDefault(world *World) {
-    World->Player = (object) {
+void SetPlayerToDefault(void) {
+    g_Player = (object) {
         .Pos = {80, 96},
         .Dir = DIR_DOWN,
         .Speed = 2,
         .Tile = ANIM_PLAYER
     };
+}
+
+void ActivateWorld(void) {
+    if(!g_IsWorldActive) {
+        g_IsWorldActive = TRUE;
+        ReadTileData("FlowerData", g_FlowerData, 3);
+        ReadTileData("WaterData", g_WaterData, 7);
+        ReadTileData("ShadowData", &g_SpriteData[255], 1);
+        ReadTileData("SpriteData", g_SpriteData, 255);
+    }
+}
+
+void RandomMove(map *Map, object *Object) {
+    int Seed = rand();
+    if(Seed % 64 == 0) {
+        Object->Dir = Seed / 64 % 4;
+
+        point NewPoint = GetFacingPoint(Object->Pos, Object->Dir);
+
+        /*FetchQuadPropSingleMap*/
+        int Quad = -1;
+        int Prop = QUAD_PROP_SOLID;
+        if(PointInMap(Map, NewPoint)) {
+            Quad = Map->Quads[NewPoint.Y][NewPoint.X];
+            Prop = g_QuadProps[Quad];
+        }
+        
+        if(!WillNPCCollide(Map, Object, NewPoint) && Prop == QUAD_PROP_NONE) {
+            Object->Tick = 32;
+            Object->IsMoving = 1;
+        }
+    }
+}
+
+void UpdatePlayerMovement(void) {
+    if(g_Player.Tick > 0) {
+        if(g_Player.Tick % 16 == 8) {
+            g_Player.IsRight ^= 1;
+        }
+        if(g_Player.IsMoving && g_Player.Tick % 2 == 0) {
+            switch(g_Player.Dir) {
+            case DIR_UP:
+                g_TileMapY -= g_Player.Speed;
+                break;
+            case DIR_LEFT:
+                g_TileMapX -= g_Player.Speed;
+                break;
+            case DIR_RIGHT:
+                g_TileMapX += g_Player.Speed;
+                break;
+            case DIR_DOWN:
+                g_TileMapY += g_Player.Speed;
+                break;
+            }
+        }
+        MoveEntity(&g_Player);
+    } 
+}
+
+void UpdateActiveWorld(void) {
+    if(g_IsWorldActive) {
+        MulTickUpdate(); 
+    }    
 }

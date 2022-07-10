@@ -7,10 +7,16 @@
 
 typedef enum inventory_state {
     IS_ITEM,
-    IS_DEPOSIT,
     IS_WITHDRAW,
+    IS_DEPOSIT,
     IS_TOSS
 } inventory_state;
+
+typedef enum red_pc_select_i {
+    RPSI_WITHDRAW,
+    RPSI_DEPOSIT,
+    RPSI_TOSS
+} red_pc_select_i;
 
 typedef struct item {
     uint8_t ID;
@@ -27,6 +33,13 @@ typedef struct inventory {
     int Y;
 } inventory;
 
+typedef struct red_pc_select {
+    inventory_state State; 
+    inventory *Inventory;
+    const char *Normal;
+    const char *Empty;
+} red_pc_select;
+
 typedef enum item_id {
     ITEM_POTION
 } item_id;
@@ -35,18 +48,18 @@ extern const char ItemNames[256][8];
 
 extern window_task DisplayWindowTask;
 extern item DisplayItem;
-extern inventory *Inventory;
-extern inventory_state InventoryState; 
+extern inventory *g_Inventory;
+extern inventory_state g_InventoryState; 
 
-extern inventory RedPC;
-extern inventory Bag;
+extern inventory g_RedPC;
+extern inventory g_Bag;
+
+extern const red_pc_select g_RedPCSelects[];
 
 item RemoveItem(inventory *Inventory, int TossCount);
 void AddItem(inventory *Inventory, item Item);
 void MoveItem(inventory *Dest, inventory *Src, int ItemCount);
-int PlaceItemCount(const inventory *Inventory, int ItemCount);
 void StartDisplayItem(inventory *Inventory);
 void UpdateDisplayItem(const inventory *Inventory);
-
 
 #endif

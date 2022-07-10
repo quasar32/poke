@@ -37,23 +37,21 @@ typedef struct object {
     char Str[256];
 } object;
 
+extern const point DirPoints[4];
+extern const point NextPoints[4];
+
+static inline point PtToQuadPt(point Point) {
+    return DivPoint(Point, 16);
+}
+
+static inline point QuadPtToPt(point Point) {
+    return MulPoint(Point, 16);
+}
+
 void MoveEntity(object *Object);
 int WillObjectCollide(const object *OtherObject, point NewPoint);
 void UpdateAnimation(const object *Object, sprite *SpriteQuad, point QuadPt);
 int ObjectInUpdateBounds(point QuadPt);
-
-extern const point DirPoints[4];
-extern const point NextPoints[4];
-
-[[maybe_unused]]
-static point PtToQuadPt(point Point) {
-    return DivPoint(Point, 16);
-}
-
-[[maybe_unused]]
-static point QuadPtToPt(point Point) {
-    return MulPoint(Point, 16);
-}
-
+point GetFacingPoint(point Pos, int Dir);
 
 #endif

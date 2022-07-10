@@ -3,6 +3,7 @@
 #include "options.h"
 #include "state.h"
 #include "scalar.h"
+#include "render.h"
 
 options_menu Options = {
     .WindowTask.Type = TT_OPTIONS,
@@ -34,10 +35,10 @@ options_menu Options = {
 static int OptionI; 
 
 void PlaceOptionsMenu(options_menu *Options) {
-    memset(WindowMap, MT_BLANK, sizeof(WindowMap));
-    PlaceTextBox((rect) {0, 0, 20, 5});
-    PlaceTextBox((rect) {0, 5, 20, 10});
-    PlaceTextBox((rect) {0, 10, 20, 15});
+    memset(g_WindowMap, MT_BLANK, sizeof(g_WindowMap));
+    PlaceBox((rect) {0, 0, 20, 5});
+    PlaceBox((rect) {0, 5, 20, 10});
+    PlaceBox((rect) {0, 10, 20, 15});
     PlaceText(
         (point) {1, 1}, 
         "TEXT SPEED\n FAST  MEDIUM SLOW\r" 
@@ -53,7 +54,7 @@ void PlaceOptionsMenu(options_menu *Options) {
 }
 
 void PlaceOptionCursor(const option *Option, int Tile) {
-    WindowMap[Option->Y][Option->Xs[Option->I]] = Tile;
+    g_WindowMap[Option->Y][Option->Xs[Option->I]] = Tile;
 }
 
 void ChangeOptionX(option *Option, int NewOptionI) {
@@ -71,7 +72,7 @@ void GS_OPTIONS(void) {
         /*RemoveSubMenu*/
         RemoveWindowTask();
         PopState();
-        PlayWave(Sound.Voice, &Sound.PressAB); 
+        PlaySoundEffect(SFX_PRESS_AB); 
     } else {
         /*MoveOptionsCursor*/
         if(VirtButtons[BT_UP] == 1) {

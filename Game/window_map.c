@@ -1,15 +1,15 @@
+#include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
-#include "window_map.h"
 #include "scalar.h"
 #include "str.h"
 #include "input.h"
+#include "render.h"
+#include "window_map.h"
 
 const rect BottomTextRect = {0, 12, 20, 18};
-
-uint8_t WindowMap[32][32];
 
 menu MainMenu = { 
     .WindowTask.Type = TT_MENU,
@@ -31,7 +31,7 @@ menu ContinueMenu = {
 
 menu StartMenu = {
     .WindowTask.Type = TT_MENU,
-    .Text = "POK√©MON\nITEM\nRED\nSAVE\nOPTION\nEXIT", 
+    .Text = "POKÈMON\nITEM\nRED\nSAVE\nOPTION\nEXIT", 
     .Rect = {10, 0, 20, 14},
     .TextY = 2,
     .EndI = 6,
@@ -73,67 +73,148 @@ menu ConfirmTossMenu = {
     .Flags = MF_AUTO_RESET
 };
 
-active_text ActiveText;
-
 window_task *DeferedTask;
 const char *DeferedMessage;
 
-void PlaceTextBox(rect Rect) {
+void PlaceBox(rect Rect) {
     /*HeadRow*/
-    WindowMap[Rect.Top][Rect.Left] = MT_TOP_LEFT;
-    memset(&WindowMap[Rect.Top][Rect.Left + 1], MT_MIDDLE, Rect.Right - Rect.Left - 2);
-    WindowMap[Rect.Top][Rect.Right - 1] = MT_TOP_RIGHT;
+    g_WindowMap[Rect.Top][Rect.Left] = MT_TOP_LEFT;
+    memset(&g_WindowMap[Rect.Top][Rect.Left + 1], MT_MIDDLE, Rect.Right - Rect.Left - 2);
+    g_WindowMap[Rect.Top][Rect.Right - 1] = MT_TOP_RIGHT;
 
     /*BodyRows*/
     for(int Y = Rect.Top + 1; Y < Rect.Bottom - 1; Y++) {
-        WindowMap[Y][Rect.Left] = MT_CENTER_LEFT;
-        memset(&WindowMap[Y][Rect.Left + 1], MT_BLANK, Rect.Right - Rect.Left - 2);
-        WindowMap[Y][Rect.Right - 1] = MT_CENTER_RIGHT;
+        g_WindowMap[Y][Rect.Left] = MT_CENTER_LEFT;
+        memset(&g_WindowMap[Y][Rect.Left + 1], MT_BLANK, Rect.Right - Rect.Left - 2);
+        g_WindowMap[Y][Rect.Right - 1] = MT_CENTER_RIGHT;
     }
 
     /*FootRow*/
-    WindowMap[Rect.Bottom - 1][Rect.Left] = MT_BOTTOM_LEFT;
-    memset(&WindowMap[Rect.Bottom - 1][Rect.Left + 1], MT_MIDDLE, Rect.Right - Rect.Left - 2);
-    WindowMap[Rect.Bottom - 1][Rect.Right - 1] = MT_BOTTOM_RIGHT;
+    g_WindowMap[Rect.Bottom - 1][Rect.Left] = MT_BOTTOM_LEFT;
+    memset(&g_WindowMap[Rect.Bottom - 1][Rect.Left + 1], MT_MIDDLE, Rect.Right - Rect.Left - 2);
+    g_WindowMap[Rect.Bottom - 1][Rect.Right - 1] = MT_BOTTOM_RIGHT;
 }
 
-int CharToTile(const char **OutStr) {
-    const char *Str = *OutStr;
-    int Output = MT_BLANK;
-    if(*Str == '*') {
-        Output = MT_TIMES;
-    } else if(*Str == '.') {
-        Output = MT_PERIOD;
-    } else if(*Str >= '0' && *Str <= ':') {
-        Output = *Str + MT_ZERO - '0';
-    } else if(*Str >= 'A' && *Str <= 'Z') {
-        Output = *Str + MT_CAPITAL_A - 'A';
-    } else if(*Str >= 'a' && *Str <= 'z') {
-        Output = *Str + MT_LOWERCASE_A - 'a';
-    } else if(*Str == '\xE9') {
-        Output = MT_ACCENTED_E;
-    } else if(*Str == '!') {
-        Output = MT_EXCLAMATION_POINT;
-    } else if(*Str == '\'') {
-        Output = MT_SLASH;
-    } else if(*Str == '-') {
-        Output = MT_DASH;
-    } else if(*Str == '~') {
-        Output = MT_TIDLE;
-    } else if(*Str == ',') {
-        Output = MT_COMMA; 
-    } else if(*Str == '?') {
-        Output = MT_QUESTION; 
-    } else {
-        Output = MT_BLANK;
-    } 
-    (*OutStr)++;
-    if(DoesStartStringMatch(Str, "√©")) {
-        Output = MT_ACCENTED_E; 
-        (*OutStr)++;
+int CharToTile(int Ch) {
+    switch(Ch) {
+    case ' ':
+        return MT_BLANK;
+    case '0' ... '9':
+        return MT_ZERO + (Ch - '0');
+    case ':':
+        return MT_COLON;
+    case 'A' ... 'Z':
+        return MT_CAPITAL_A + (Ch - 'A');
+    case 'a' ... 'z':
+        return MT_LOWERCASE_A + (Ch - 'a');
+    case 'È':
+        return MT_ACCENTED_E;
+    case '!':
+        return MT_EXCLAMATION_POINT;
+    case '\'':
+        return MT_QUOTE_S;
+    case '-':
+        return MT_DASH;
+    case '~':
+        return MT_QUOTE_M;
+    case ',':
+        return MT_COMMA;
+    case '.':
+        return MT_PERIOD;
+    case ';':
+        return MT_SEMI_COLON;
+    case '[':
+        return MT_LEFT_BRACKET;
+    case ']':
+        return MT_RIGHT_BRACKET; 
+    case '(':
+        return MT_LEFT_PARENTHESIS;
+    case ')':
+        return MT_RIGHT_PARENTHESIS;
+    case '^':
+        return MT_MALE_SYMBOL;
+    case '|':
+        return MT_FEMALE_SYMBOL;
+    case '/':
+        return MT_SLASH;
+    case '\1':
+        return MT_PK;
+    case '\2':
+        return MT_MN;
+    case '=':
+        return MT_MIDDLE_SCORE;
+    case '_':
+        return MT_UPPER_SCORE;
+    case '\3':
+        return MT_END;
+    case '*': 
+        return MT_TIMES;
+    case '?':
+        return MT_QUESTION;
     }
-    return Output;
+    return MT_EMPTY;
 }
+
+int TileToChar(int Tile) {
+    switch(Tile) {
+    case MT_BLANK:
+        return ' ';
+    case MT_ZERO ... MT_NINE:
+        return Tile - MT_ZERO + '0';
+    case MT_COLON:
+        return ':';
+    case MT_CAPITAL_A ... MT_CAPITAL_Z:
+        return Tile - MT_CAPITAL_A + 'A';
+    case MT_LOWERCASE_A ... MT_LOWERCASE_Z:
+        return Tile - MT_LOWERCASE_A + 'a';
+    case MT_ACCENTED_E:
+        return 'È';
+    case MT_EXCLAMATION_POINT:
+        return '!';
+    case MT_QUOTE_S:
+        return '\'';
+    case MT_DASH:
+        return '-';
+    case MT_QUOTE_M:
+        return '~';
+    case MT_COMMA:
+        return ',';
+    case MT_PERIOD:
+        return '.';
+    case MT_SEMI_COLON:
+        return ';';
+    case MT_LEFT_BRACKET:
+        return '[';
+    case MT_RIGHT_BRACKET: 
+        return ']';
+    case MT_LEFT_PARENTHESIS:
+        return '(';
+    case MT_RIGHT_PARENTHESIS:
+        return ')';
+    case MT_MALE_SYMBOL:
+        return '^';
+    case MT_FEMALE_SYMBOL:
+        return '|';
+    case MT_SLASH:
+        return '/';
+    case MT_PK:
+        return '\1';
+    case MT_MN:
+        return '\2';
+    case MT_MIDDLE_SCORE:
+        return '=';
+    case MT_UPPER_SCORE:
+        return '_';
+    case MT_END:
+        return '\3';
+    case MT_TIMES:
+        return '*'; 
+    case MT_QUESTION:
+        return '?';
+    }
+    return '\0';
+}
+
 
 void PlaceText(point TileMin, const char *Text) {
     int X = TileMin.X;
@@ -151,7 +232,8 @@ void PlaceText(point TileMin, const char *Text) {
             Text++;
             break;
         default:
-            WindowMap[Y][X] = CharToTile(&Text);
+            g_WindowMap[Y][X] = CharToTile(*Text);
+            Text++;
             X++;
         }
     }
@@ -166,23 +248,18 @@ void PlaceTextF(point TileMin, const char *Format, ...) {
     PlaceText(TileMin, Text);
 }
 
-void PlaceStaticText(rect Rect, const char *Text) {
-    PlaceTextBox(Rect);
-    PlaceText((point) {1, 14}, Text);
-}
-
 void PlaceMenuCursor(const menu *Menu, int MenuTile) {
-    WindowMap[Menu->SelectI * 2 + Menu->TextY][Menu->Rect.Left + 1] = MenuTile; 
+    g_WindowMap[Menu->SelectI * 2 + Menu->TextY][Menu->Rect.Left + 1] = MenuTile; 
 }
 
 void PlaceMenu(const menu *Menu) {
-    PlaceTextBox(Menu->Rect); 
+    PlaceBox(Menu->Rect); 
     PlaceText((point) {Menu->Rect.Left + 2, Menu->TextY}, Menu->Text); 
     PlaceMenuCursor(Menu, MT_FULL_HORZ_ARROW);
 }
 
 void PlaceInventory(const inventory *Inventory) {
-    PlaceTextBox((rect) {4, 2, 20, 13});
+    PlaceBox((rect) {4, 2, 20, 13});
     int MinItem = Inventory->ItemSelect - Inventory->Y;
     for(int I = 0; I < 4; I++) {
         int ItemI = MinItem + I;
@@ -198,17 +275,17 @@ void PlaceInventory(const inventory *Inventory) {
     }
     
     /*PlaceInventoryCursor*/
-    WindowMap[Inventory->Y * 2 + 4][5] = MT_FULL_HORZ_ARROW;
+    g_WindowMap[Inventory->Y * 2 + 4][5] = MT_FULL_HORZ_ARROW;
 }
 
 void ClearWindow(void) {
-    memset(WindowMap, 0, sizeof(WindowMap));
+    memset(g_WindowMap, 0, sizeof(g_WindowMap));
 }
 
 void ClearWindowRect(rect Rect) {
     for(int Y = Rect.Top; Y < Rect.Bottom; Y++) {
         for(int X = Rect.Left; X < Rect.Right; X++) {
-            WindowMap[Y][X] = 0;
+            g_WindowMap[Y][X] = 0;
         }
     }
 }
@@ -237,10 +314,6 @@ void MoveMenuCursorWrap(menu *Menu) {
     }
 }
 
-
-void FlashTextCursor(active_text *ActiveText) {
-    WindowMap[16][18] = ActiveText->Tick++ / 30 % 2 ? MT_BLANK : MT_FULL_VERT_ARROW;
-}
 
 void ClearBottomWindow(void) { 
     ClearWindowRect(BottomTextRect);

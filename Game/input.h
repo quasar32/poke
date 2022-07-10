@@ -19,8 +19,8 @@ typedef enum buttons {
 extern int VirtButtons[COUNTOF_BT];
 
 __attribute__((constructor))
-BOOL InitXInput(void);
+void InitXInput(void);
 
-void UpdateInput(BOOL IsActive);
+void UpdateInput(void);
 
 #endif

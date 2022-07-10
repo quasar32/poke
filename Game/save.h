@@ -11,8 +11,6 @@ typedef struct save_rect {
     const rect Rect;
 } save_rect;
 
-extern bool IsSaveComplete;
-
 extern int SaveSec;
 extern int StartSaveSec;
 

@@ -1,5 +1,11 @@
+#include "read.h"
 #include "read_buffer.h"
 #include "scalar.h"
+
+void ReadBufferFromFile(read_buffer *ReadBuffer, const char *Path) {
+    ReadBuffer->Index = 0;
+    ReadBuffer->Size = ReadAll(Path, ReadBuffer->Data, sizeof(ReadBuffer->Data));
+} 
 
 uint8_t ReadBufferPopByte(read_buffer *ReadBuffer) {
     uint8_t Result = 0;

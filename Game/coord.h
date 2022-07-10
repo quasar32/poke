@@ -22,40 +22,35 @@ typedef struct dim_rect {
     int Height;
 } dim_rect;
 
-[[maybe_unused]] 
-static point AddPoints(point A, point B)  {
+static inline point AddPoints(point A, point B)  {
     return (point) {
         .X = A.X + B.X,
         .Y = A.Y + B.Y
     };
 }
 
-[[maybe_unused]] 
-static point SubPoints(point A, point B)  {
+static inline point SubPoints(point A, point B)  {
     return (point) {
         .X = A.X - B.X,
         .Y = A.Y - B.Y
     };
 }
 
-[[maybe_unused]] 
-static point MulPoint(point A, short B) {
+static inline point MulPoint(point A, short B) {
     return (point) {
         .X = A.X * B,
         .Y = A.Y * B 
     };
 }
 
-[[maybe_unused]]
-static point DivPoint(point A, short B) {
+static inline point DivPoint(point A, short B) {
     return (point) {
         .X = A.X / B,
         .Y = A.Y / B
     };
 }
 
-[[maybe_unused]] 
-static int EqualPoints(point A, point B) {
+static inline int EqualPoints(point A, point B) {
     return A.X == B.X && A.Y == B.Y;
 }
 

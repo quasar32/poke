@@ -13,6 +13,8 @@ typedef struct read_buffer {
     int Size;
 } read_buffer;
 
+void ReadBufferFromFile(read_buffer *ReadBuffer, const char *Path); 
+
 uint8_t ReadBufferPopByte(read_buffer *ReadBuffer);
 void ReadBufferPopObject(read_buffer *ReadBuffer, void *Object, int Size);
 void ReadBufferPopString(read_buffer *ReadBuffer, char Str[256]);

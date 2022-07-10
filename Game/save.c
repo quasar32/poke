@@ -7,8 +7,6 @@
 #include "window_map.h"
 #include "scalar.h"
 
-bool IsSaveComplete;
-
 int SaveSec;
 int StartSaveSec;
 
@@ -55,8 +53,8 @@ BOOL WriteSaveHeader(void) {
 
 BOOL WriteSave(const world *World) {
     write_buffer WriteBuffer = {0};
-    WriteInventory(&WriteBuffer, &Bag);
-    WriteInventory(&WriteBuffer, &RedPC);
+    WriteInventory(&WriteBuffer, &g_Bag);
+    WriteInventory(&WriteBuffer, &g_RedPC);
 
     const map *CurMap = &World->Maps[World->MapI];
     const map *OthMap = &World->Maps[!World->MapI];
@@ -64,12 +62,11 @@ BOOL WriteSave(const world *World) {
     WriteBufferPushString(&WriteBuffer, CurMap->Path, CurMap->PathLen);
     WriteBufferPushString(&WriteBuffer, OthMap->Path, OthMap->PathLen);
 
-    WriteBufferPushByte(&WriteBuffer, World->Player.Tile);
-    WriteBufferPushSaveObject(&WriteBuffer, &World->Player);
+    WriteBufferPushByte(&WriteBuffer, g_Player.Tile);
+    WriteBufferPushSaveObject(&WriteBuffer, &g_Player);
     WriteBufferPushSaveObjects(&WriteBuffer, CurMap);
     WriteBufferPushSaveObjects(&WriteBuffer, OthMap);
-    WriteBufferPushByte(&WriteBuffer, MusicI[World->MapI]);
-    WriteBufferPushByte(&WriteBuffer, MusicI[!World->MapI]);
+    WriteBufferPushByte(&WriteBuffer, World->MusicI);
 
     return WriteAll("Save", WriteBuffer.Data, WriteBuffer.Index);
 }
@@ -89,8 +86,8 @@ void ReadSave(world *World) {
     read_buffer ReadBuffer = {
         .Size = ReadAll("Save", ReadBuffer.Data, sizeof(ReadBuffer.Data))
     };
-    ReadBufferPopInventory(&ReadBuffer, &Bag);
-    ReadBufferPopInventory(&ReadBuffer, &RedPC);
+    ReadBufferPopInventory(&ReadBuffer, &g_Bag);
+    ReadBufferPopInventory(&ReadBuffer, &g_RedPC);
 
     map *CurMap = &World->Maps[World->MapI];
     map *OthMap = &World->Maps[!World->MapI];
@@ -112,20 +109,19 @@ void ReadSave(world *World) {
         memset(OthMap, 0, sizeof(*OthMap));
     }
 
-    World->Player.Tile = ReadBufferPopByte(&ReadBuffer) & 0xF0;
-    ReadBufferPopSaveObject(&ReadBuffer, &World->Player);
+    g_Player.Tile = ReadBufferPopByte(&ReadBuffer) & 0xF0;
+    ReadBufferPopSaveObject(&ReadBuffer, &g_Player);
     ReadBufferPopSaveObjects(&ReadBuffer, CurMap);
     ReadBufferPopSaveObjects(&ReadBuffer, OthMap);
-    MusicI[0] = ReadBufferPopByte(&ReadBuffer); 
-    MusicI[1] = ReadBufferPopByte(&ReadBuffer); 
+    World->MusicI = ReadBufferPopByte(&ReadBuffer); 
 }
 
 void PlaceSave(rect Rect) {
     int SaveMin = MinInt(SaveSec / 60, 99 * 59 + 60); 
-    PlaceTextBox(Rect);
+    PlaceBox(Rect);
     PlaceTextF(
         (point) {Rect.Left + 1, Rect.Top + 2},
-        "PLAYER %s\nBADGES       %d\nPOK" "\xE9" "DEX    %3d\nTIME     %2d:%02d",
+        "PLAYER %s\nBADGES       %d\nPOKÈDEX    %3d\nTIME     %2d:%02d",
         "RED",
         0,
         0,

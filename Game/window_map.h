@@ -11,6 +11,7 @@
 #define AT_MANUAL_RESTORE 0x01 
 #define AT_WAIT_FLASH     0x02
 #define AT_AUTO_CLEAR     0x04
+#define AT_NIDORINA       0x08
 
 #define MF_AUTO_RESET 1
 
@@ -25,21 +26,40 @@ typedef enum menu_tile {
     MT_CENTER_RIGHT = 7,
     MT_BOTTOM_RIGHT = 8,
     MT_ZERO = 9,
+    MT_NINE = 18,
+    MT_COLON = 19,
     MT_CAPITAL_A = 20,
+    MT_CAPITAL_U = 40,
+    MT_CAPITAL_Z = 45,
     MT_LOWERCASE_A = 46,
+    MT_LOWERCASE_L = 57,
+    MT_LOWERCASE_Z = 71,
     MT_ACCENTED_E = 72,
-    MT_SLASH = 75,
     MT_EXCLAMATION_POINT = 74,
+    MT_QUOTE_S = 75,
     MT_DASH = 76,
     MT_FULL_VERT_ARROW = 77,
-    MT_TIDLE = 78,
+    MT_QUOTE_M = 78,
     MT_COMMA = 79,
     MT_FULL_HORZ_ARROW = 80,
     MT_PERIOD = 81,
-    MT_EMPTY_HORZ_ARROW = 83,
-    MT_TIMES = 84,
-    MT_QUESTION = 85,
-    MT_TRAINER = 86
+    MT_EMPTY_HORZ_ARROW = 82,
+    MT_SEMI_COLON = 83,
+    MT_LEFT_BRACKET = 84,
+    MT_RIGHT_BRACKET = 85,
+    MT_LEFT_PARENTHESIS = 86,
+    MT_RIGHT_PARENTHESIS = 87,
+    MT_MALE_SYMBOL = 88,
+    MT_FEMALE_SYMBOL = 89,
+    MT_SLASH = 90,
+    MT_PK = 91,
+    MT_MN = 92,
+    MT_MIDDLE_SCORE = 93,
+    MT_UPPER_SCORE = 94,
+    MT_END = 95,
+    MT_TIMES = 96,
+    MT_QUESTION = 97,
+    MT_TRAINER = 98
 } menu_tile;
 
 typedef enum option_names {
@@ -59,15 +79,6 @@ typedef struct menu {
     int SelectI;
 } menu;
 
-typedef struct active_text {
-    const char *Str;
-    const char *Restore;
-    uint64_t Tick;
-    point TilePt; 
-    int BoxDelay;
-    int Props;
-} active_text;
-
 extern const rect BottomTextRect;
 
 extern menu MainMenu; 
@@ -78,18 +89,15 @@ extern menu YesNoMenu;
 extern menu UseTossMenu;
 extern menu ConfirmTossMenu;
 
-extern uint8_t WindowMap[32][32];
-
-extern active_text ActiveText;
-
 extern window_task *DeferedTask;
 extern const char *DeferedMessage;
 
-int CharToTile(const char **Char);
-void PlaceTextBox(rect Rect);
+int CharToTile(int Ch);
+int TileToChar(int Tile);
+
+void PlaceBox(rect Rect);
 void PlaceText(point TileMin, const char *Text);
 void PlaceTextF(point TileMin, const char *Format, ...);
-void PlaceStaticText(rect Rect, const char *Text);
 
 void PlaceInventory(const inventory *Inventory);
 
@@ -103,7 +111,5 @@ void MoveMenuCursorWrap(menu *Menu);
 void ClearWindow(void);
 void ClearWindowRect(rect Rect);
 void ClearBottomWindow(void);
-
-void FlashTextCursor(active_text *ActiveText);
 
 #endif

@@ -15,20 +15,41 @@ item DisplayItem = {
     .Count = 1
 };
 
-inventory *Inventory;
-inventory_state InventoryState;
+inventory *g_Inventory;
+inventory_state g_InventoryState;
 
-inventory RedPC = {
+inventory g_RedPC = {
     .WindowTask.Type = TT_INVENTORY,
     .ItemCapacity = 50,
     .Items = (item[50]) {{ITEM_POTION, 99}, {ITEM_POTION, 50}},
     .ItemCount = 2 
 };
 
-inventory Bag = {
+inventory g_Bag = {
     .WindowTask.Type = TT_INVENTORY,
     .ItemCapacity = 20,
     .Items = (item[20]) {{0}}
+};
+
+const red_pc_select g_RedPCSelects[] = {
+    [RPSI_WITHDRAW] = {
+        .State = IS_WITHDRAW,
+        .Inventory = &g_RedPC,
+        .Normal = "What do you want\nto withdraw?",
+        .Empty = "There is\nnothing stored."
+    }, 
+    [RPSI_DEPOSIT] = {
+        .State = IS_DEPOSIT,
+        .Inventory = &g_Bag,
+        .Normal = "What do you want to\ndeposit?",
+        .Empty = "You have nothing\nto deposit."
+    },
+    [RPSI_TOSS] = {
+        .State = IS_TOSS, 
+        .Inventory = &g_RedPC,
+        .Normal = "What do you want to\ntoss away?", 
+        .Empty = "There is\nnothing stored."
+    }
 };
 
 item RemoveItem(inventory *Inventory, int TossCount) {
@@ -76,14 +97,14 @@ void MoveItem(inventory *Dest, inventory *Src, int ItemCount) {
     }
 } 
 
-int PlaceItemCount(const inventory *Inventory, int ItemCount) {
+static int PlaceItemCount(const inventory *Inventory, int ItemCount) {
     ItemCount = PosIntMod(ItemCount - 1, Inventory->Items[Inventory->ItemSelect].Count) + 1; 
     PlaceTextF((point) {16, 10}, "*%02d", ItemCount);
     return ItemCount;
 }
 
 void StartDisplayItem(inventory *Inventory) {
-    PlaceTextBox((rect) {15, 9, 20, 12});
+    PlaceBox((rect) {15, 9, 20, 12});
     PlaceItemCount(Inventory, DisplayItem.Count);
 }
 

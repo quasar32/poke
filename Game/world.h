@@ -1,6 +1,8 @@
 #ifndef MAP_H
 #define MAP_H
 
+#include <windows.h>
+
 #include "object.h"
 
 #define ANIM_PLAYER 0
@@ -54,24 +56,12 @@ typedef struct map {
     object Objects[256];
 } map;
 
-typedef struct data_path {
-    const char *Tile;
-    const char *Quad;
-    const char *Prop;
-} data_path; 
-
 typedef struct world {
-    uint8_t TileData[256][64];
-    uint8_t QuadProps[128];
-    uint8_t QuadData[128][4];
-
+    int MusicI;
     int MapI;
     map Maps[2];
 
-    object Player;
-
     int IsOverworld;
-    const data_path *DataPath;
 } world;
 
 typedef struct quad_info {
@@ -80,6 +70,12 @@ typedef struct quad_info {
     int Quad;
     int Prop;
 } quad_info;
+
+extern const int8_t OverworldMusic[WORLD_HEIGHT][WORLD_WIDTH];
+
+extern BOOL g_InOverworld;
+
+extern object g_Player;
 
 int GetMapDir(const map Maps[2], int Map);
 int PointInMap(const map *Map, point Pt);
@@ -93,6 +89,10 @@ int LoadAdjacentMap(world *World, int DeltaX, int DeltaY);
 int PointInMap(const map *Map, point Pt);
 void PlaceViewMap(const world *World, int IsDown);
 void PlaceMap(const world *World, point TileMin, rect QuadRect);
-void SetPlayerToDefault(world *World);
+void SetPlayerToDefault(void);
+void ActivateWorld(void);
+void RandomMove(map *Map, object *Object);
+void UpdatePlayerMovement(void);
+void UpdateActiveWorld(void);
 
 #endif

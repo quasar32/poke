@@ -5,21 +5,21 @@
 
 typedef MMRESULT winmm_func(UINT uPeriod);
 
-static int64_t PerfFreq;
-static int64_t BeginCounter;
-static int64_t DeltaCounter;
-static int64_t PeriodCounter;
+static int64_t g_PerfFreq;
+static int64_t g_BeginCounter;
+static int64_t g_DeltaCounter;
+static int64_t g_PeriodCounter;
 
-static HMODULE WinmmLib;
-static winmm_func *TimeBeginPeriod;
-static winmm_func *TimeEndPeriod;
+static HMODULE g_WinmmLib;
+static winmm_func *g_TimeBeginPeriod;
+static winmm_func *g_TimeEndPeriod;
 
 static bool IsGranular;
 
 int64_t QueryPerfFreq(void) {
-    LARGE_INTEGER PerfFreq;
-    QueryPerformanceFrequency(&PerfFreq);
-    return PerfFreq.QuadPart;
+    LARGE_INTEGER g_PerfFreq;
+    QueryPerformanceFrequency(&g_PerfFreq);
+    return g_PerfFreq.QuadPart;
 }
 
 int64_t QueryPerfCounter(void) {
@@ -28,18 +28,18 @@ int64_t QueryPerfCounter(void) {
     return PerfCounter.QuadPart;
 }
 
-static int64_t CounterToMS(int64_t Counter, int64_t PerfFreq) {
-    return 1000LL * Counter / PerfFreq;
+static int64_t CounterToMS(int64_t Counter, int64_t g_PerfFreq) {
+    return 1000LL * Counter / g_PerfFreq;
 }
 
-BOOL CreateFrame(void) {
-    PerfFreq = QueryPerfFreq();
-    BeginCounter = QueryPerfCounter();
-    DeltaCounter = 0LL;
-    PeriodCounter = (int64_t) (PerfFreq / 60);
+BOOL CreateFrameTimer(void) {
+    g_PerfFreq = QueryPerfFreq();
+    g_BeginCounter = QueryPerfCounter();
+    g_DeltaCounter = 0LL;
+    g_PeriodCounter = (int64_t) (g_PerfFreq / 60);
 
     FARPROC Procs[2];
-    WinmmLib = LoadProcs(
+    g_WinmmLib = LoadProcs(
         "winmm.dll",
         _countof(Procs),
         (const char *[]) {
@@ -48,49 +48,49 @@ BOOL CreateFrame(void) {
         },
         Procs
     ); 
-    if(!WinmmLib) {
+    if(!g_WinmmLib) {
         return FALSE;
     }
-    TimeBeginPeriod = (winmm_func *) Procs[0]; 
-    TimeEndPeriod = (winmm_func *) Procs[1]; 
-    IsGranular = (TimeBeginPeriod(1U) == TIMERR_NOERROR); 
+    g_TimeBeginPeriod = (winmm_func *) Procs[0]; 
+    g_TimeEndPeriod = (winmm_func *) Procs[1]; 
+    IsGranular = (g_TimeBeginPeriod(1U) == TIMERR_NOERROR); 
 
     if(!IsGranular) {
-        FreeLibrary(WinmmLib);
-        TimeEndPeriod = NULL;
-        TimeBeginPeriod = NULL;
-        WinmmLib = NULL;
+        FreeLibrary(g_WinmmLib);
+        g_TimeEndPeriod = NULL;
+        g_TimeBeginPeriod = NULL;
+        g_WinmmLib = NULL;
     }
     return IsGranular;
 }
 
-void DestroyFrame(void) {
+void DestroyFrameTimer(void) {
     if(IsGranular) {
-        TimeEndPeriod(1U);
+        g_TimeEndPeriod(1U);
     } 
 }
 
-void StartFrame(void) {
-    BeginCounter = QueryPerfCounter();
+void StartFrameTimer(void) {
+    g_BeginCounter = QueryPerfCounter();
 }
 
-void EndFrame(void) {
-    DeltaCounter = GetDeltaCounter(BeginCounter);
+void EndFrameTimer(void) {
+    g_DeltaCounter = GetDeltaCounter(g_BeginCounter);
     if(IsGranular) {
-        int64_t SleepMS = CounterToMS(PeriodCounter - DeltaCounter, PerfFreq);
+        int64_t SleepMS = CounterToMS(g_PeriodCounter - g_DeltaCounter, g_PerfFreq);
         if(SleepMS > 0LL) {
             Sleep(SleepMS);
         }
     }
-    while(DeltaCounter < PeriodCounter) {
-        DeltaCounter = GetDeltaCounter(BeginCounter);
+    while(g_DeltaCounter < g_PeriodCounter) {
+        g_DeltaCounter = GetDeltaCounter(g_BeginCounter);
     }
 }
 
-float GetFrameDelta(void) {
+float GetFrameTimerDelta(void) {
     return (
-        (float) (DeltaCounter == 0LL ? PeriodCounter : DeltaCounter) / 
-        (float) PerfFreq
+        (float) (g_DeltaCounter == 0LL ? g_PeriodCounter : g_DeltaCounter) / 
+        (float) g_PerfFreq
     );
 }
 
@@ -99,6 +99,6 @@ int64_t GetDeltaCounter(int64_t BeginCounter) {
 }
 
 int64_t GetSecondsElapsed(int64_t BeginCounter) {
-    return GetDeltaCounter(BeginCounter) / PerfFreq;
+    return GetDeltaCounter(BeginCounter) / g_PerfFreq;
 }
 

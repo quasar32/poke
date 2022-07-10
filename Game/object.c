@@ -21,6 +21,9 @@ void MoveEntity(object *Object) {
         Object->Pos = AddPoints(Object->Pos, DeltaPoint);
     }
     Object->Tick--;
+    if(Object->Tick == 0) {
+        Object->IsMoving = 0;
+    }
 }
 
 int WillObjectCollide(const object *OtherObject, point NewPoint) {
@@ -120,5 +123,11 @@ void UpdateAnimation(const object *Object, sprite *SpriteQuad, point QuadPt) {
 
 int ObjectInUpdateBounds(point QuadPt) {
     return QuadPt.X > -16 && QuadPt.X < 176 && QuadPt.Y > -16 && QuadPt.Y < 160;
+}
+
+point GetFacingPoint(point Pos, int Dir) {
+    point OldPoint = PtToQuadPt(Pos);
+    point DirPoint = DirPoints[Dir];
+    return AddPoints(OldPoint, DirPoint);
 }
 

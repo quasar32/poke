@@ -1,8 +1,6 @@
 #ifndef AUDIO_H
 #define AUDIO_H
 
-#include <stdatomic.h>
-#include <stdbool.h>
 #include <stdint.h>
 #include <windows.h>
 
@@ -11,62 +9,43 @@
 
 #include "stb_vorbis.h"
 
-typedef HRESULT WINAPI xaudio2_create(IXAudio2 **, UINT32, XAUDIO2_PROCESSOR);
-typedef void WINAPI co_uninitialize(void);
-typedef HRESULT WINAPI co_initialize_ex(LPVOID, DWORD);
+typedef enum music_path_i {
+    MUS_INVALID = -1,
+    MUS_TITLE = 1,
+    MUS_OAK_SPEECH = 2,
+    MUS_PALLETE_TOWN = 3,
+    MUS_ROUTE_1 = 9
+} music_path_i;
 
-typedef struct com {
-    HMODULE Library;
-    co_initialize_ex *CoInitializeEx; 
-    co_uninitialize *CoUninitialize;
-} com;
+typedef enum sound_effect_i {
+    SFX_COLLISION,
+    SFX_LEDGE,
+    SFX_START_MENU,
+    SFX_PRESS_AB,
+    SFX_GO_OUTSIDE,
+    SFX_GO_INSIDE,
+    SFX_SAVE,
+    SFX_TURN_ON_PC,
+    SFX_TURN_OFF_PC,
+    SFX_WITHDRAW_DEPOSIT 
+} sound_effect_i;
 
-typedef struct xaudio2 {
-    HMODULE Library;
-    xaudio2_create *Create;
-    IXAudio2 *Engine;
-    IXAudio2MasteringVoice *MasterVoice;
+typedef enum cry_i {
+    CRY_NIDORINA = 30,
+} cry_i; 
 
-    IXAudio2VoiceCallback StreamCallback;
-    IXAudio2SourceVoice *SourceVoice;
+__attribute__((constructor))
+BOOL CreateXAudio2(void);
 
-    HANDLE StreamStart;
-    HANDLE StreamEnd;
-    HANDLE StreamThread; 
-    HANDLE BufferEndEvent;
+__attribute__((destructor))
+void DestroyXAudio2(void);
 
-    stb_vorbis *Vorbis;
-    _Atomic bool IsPlaying;
-} xaudio2;
+BOOL PlayMusic(music_path_i I);
+BOOL PlaySoundEffect(sound_effect_i SoundEffectI);
+BOOL PlayCry(cry_i CryI);
 
-typedef struct sound {
-    IXAudio2SourceVoice *Voice;
-    XAUDIO2_BUFFER Collision;
-    XAUDIO2_BUFFER Ledge; 
-    XAUDIO2_BUFFER StartMenu; 
-    XAUDIO2_BUFFER PressAB;
-    XAUDIO2_BUFFER GoOutside;
-    XAUDIO2_BUFFER GoInside; 
-    XAUDIO2_BUFFER Save;
-    XAUDIO2_BUFFER TurnOnPC;
-    XAUDIO2_BUFFER TurnOffPC;
-    XAUDIO2_BUFFER WithdrawDeposit; 
-} sound;
+BOOL MusicSetVolume(float Volume);
 
-BOOL InitCom(com *Com);
-void DestroyCom(com *Com);
-BOOL InitXAudio2(xaudio2 *XAudio2);
-void DestroyXAudio2(xaudio2 *XAudio2);
-BOOL ReadSound(LPCSTR Path, XAUDIO2_BUFFER *XBuf);
-BOOL PlayWave(IXAudio2SourceVoice *Voice, const XAUDIO2_BUFFER *Buffer);
-BOOL PlayMusic(xaudio2 *XAudio2, int I);
-HRESULT SetVolume(IXAudio2SourceVoice *Voice, float Volume);
-int GetQueueCount(IXAudio2SourceVoice *Voice);
-HRESULT CreateGenericVoice(IXAudio2 *Engine, IXAudio2SourceVoice **Voice);
-bool PlayOgg(xaudio2 *XAudio2, int MusicI);
-
-extern uint32_t MusicTick;
-extern sound Sound;
-extern int MusicI[2];
+BOOL IsSoundPlaying(void);
 
 #endif
