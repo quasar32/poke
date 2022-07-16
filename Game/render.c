@@ -1,9 +1,36 @@
 #include <string.h>
 
-#include "read_buffer.h"
+#include "buffer.h"
 #include "render.h"
 #include "scalar.h"
-#include "window_map.h"
+#include "text.h"
+
+const RGBQUAD g_Palletes[][4] = {
+    [PAL_DEFAULT] = {
+        {0xFF, 0xEF, 0xFF, 0x00},
+        {0xA8, 0xA8, 0xA8, 0x00},
+        {0x80, 0x80, 0x80, 0x00},
+        {0x10, 0x10, 0x18, 0x00}
+    },
+    [PAL_PALLETE] = {
+        {0xFF, 0xEF, 0xFF, 0x00},
+        {0xDE, 0xE7, 0xCE, 0x00},
+        {0xFF, 0xD6, 0xA5, 0x00},
+        {0x10, 0x10, 0x18, 0x00}
+    },
+    [PAL_ROUTE_1] = {
+        {0xFF, 0xEF, 0xFF, 0x00},
+        {0x5A, 0xE7, 0xAD, 0x00},
+        {0xFF, 0xD6, 0xA5, 0x00},
+        {0x10, 0x10, 0x18, 0x00}
+    },
+    [PAL_OAK] = {
+        {0xFF, 0xEF, 0xFF, 0x00},
+        {0x8C, 0xB5, 0xF7, 0x00},
+        {0x9C, 0x73, 0x84, 0x00},
+        {0x10, 0x10, 0x18, 0x00}
+    }
+};
 
 bitmap g_Bitmap = {
     .Header = {
@@ -64,29 +91,29 @@ void RenderSprites(void) {
         if(g_Sprites[I].Y < 8) {
             RowsToRender = g_Sprites[I].Y;
         } else if(g_Sprites[I].Y > BM_HEIGHT) {
-            RowsToRender = MaxInt(BM_HEIGHT + 8 - g_Sprites[I].Y, 0);
+            RowsToRender = MAX(BM_HEIGHT + 8 - g_Sprites[I].Y, 0);
         }
 
         int ColsToRender = 8;
         if(g_Sprites[I].X < 8) {
             ColsToRender = g_Sprites[I].X;
         } else if(g_Sprites[I].X > BM_WIDTH) {
-            ColsToRender = MaxInt(BM_WIDTH + 8 - g_Sprites[I].X, 0);
+            ColsToRender = MAX(BM_WIDTH + 8 - g_Sprites[I].X, 0);
         }
 
-        int DstX = MaxInt(g_Sprites[I].X - 8, 0);
-        int DstY = MaxInt(g_Sprites[I].Y - 8, 0);
+        int DstX = MAX(g_Sprites[I].X - 8, 0);
+        int DstY = MAX(g_Sprites[I].Y - 8, 0);
 
-        int SrcX = MaxInt(8 - g_Sprites[I].X, 0);
+        int SrcX = MAX(8 - g_Sprites[I].X, 0);
         int DispX = 1;
         if(g_Sprites[I].Flags & SPR_HORZ_FLAG) {
-            SrcX = MinInt(g_Sprites[I].X, 7);
+            SrcX = MIN(g_Sprites[I].X, 7);
             DispX = -1;
         }
         int DispY = 8;
-        int SrcY = MaxInt(8 - g_Sprites[I].Y, 0);
+        int SrcY = MAX(8 - g_Sprites[I].Y, 0);
         if(g_Sprites[I].Flags & SPR_VERT_FLAG) {
-            SrcY = MinInt(g_Sprites[I].Y, 7);
+            SrcY = MIN(g_Sprites[I].Y, 7);
             DispY = -8;
         }
 
@@ -187,4 +214,3 @@ void ReadHorzFlipTrainerTileData(const char *Path) {
         }
     }
 }
-

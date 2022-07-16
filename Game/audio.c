@@ -1,8 +1,7 @@
 #include "audio.h"
 #include "container.h"
-#include "procs.h"
-#include "read.h"
 #include "stb_vorbis.h"
+#include "win32.h"
 
 #define STREAM_VOICE_COUNT 2
 
@@ -58,7 +57,8 @@ static const char *const SoundEffectPaths[] = {
     "SoundEffects/SFX_SAVE.ogg", 
     "SoundEffects/SFX_TURN_ON_PC.ogg",
     "SoundEffects/SFX_TURN_OFF_PC.ogg",
-    "SoundEffects/SFX_WITHDRAW_DEPOSIT.ogg"
+    "SoundEffects/SFX_WITHDRAW_DEPOSIT.ogg",
+    "SoundEffects/SFX_SHRINK.ogg"
 };
 
 typedef void WINAPI co_uninitialize(void);

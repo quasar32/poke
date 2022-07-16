@@ -27,7 +27,8 @@ typedef enum sound_effect_i {
     SFX_SAVE,
     SFX_TURN_ON_PC,
     SFX_TURN_OFF_PC,
-    SFX_WITHDRAW_DEPOSIT 
+    SFX_WITHDRAW_DEPOSIT,
+    SFX_SHRINK 
 } sound_effect_i;
 
 typedef enum cry_i {

@@ -15,13 +15,6 @@ typedef struct point {
     short Y; 
 } point;
 
-typedef struct dim_rect {
-    int X;
-    int Y;
-    int Width;
-    int Height;
-} dim_rect;
-
 static inline point AddPoints(point A, point B)  {
     return (point) {
         .X = A.X + B.X,
@@ -53,8 +46,5 @@ static inline point DivPoint(point A, short B) {
 static inline int EqualPoints(point A, point B) {
     return A.X == B.X && A.Y == B.Y;
 }
-
-dim_rect WinToDimRect(RECT WinRect);
-dim_rect GetDimClientRect(HWND Window);
 
 #endif

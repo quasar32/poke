@@ -3,7 +3,7 @@
 #include "container.h"
 #include "save.h"
 #include "options.h"
-#include "window_map.h"
+#include "text.h"
 #include "window_task.h"
 
 BOOL HasTextBox;
@@ -28,12 +28,6 @@ static void ExecuteWindowTask(window_task *Task) {
         {
             save_rect *SaveRect = CONTAINER_OF(Task, save_rect, WindowTask);
             PlaceSave(SaveRect->Rect);
-        }
-        break;
-    case TT_OPTIONS:
-        {
-            options_menu *OptionsMenu = CONTAINER_OF(Task, options_menu, WindowTask);
-            PlaceOptionsMenu(OptionsMenu);
         }
         break;
     case TT_DISPLAY:

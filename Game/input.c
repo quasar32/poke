@@ -1,7 +1,6 @@
 #include <xinput.h>
 
 #include "input.h"
-#include "procs.h"
 #include "win32.h"
 
 typedef DWORD WINAPI xinput_get_state(DWORD, XINPUT_STATE *);

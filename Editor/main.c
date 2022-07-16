@@ -259,6 +259,7 @@ static uint8_t g_TileData[256 * 64];
 static uint8_t g_QuadProps[128];
 static uint8_t g_QuadData[512];
 static uint8_t g_PalleteNum = 0;
+static uint8_t g_MusicI = 0;
 static array_rect g_TileMap;
 struct {
     const char *Tile;

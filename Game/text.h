@@ -59,15 +59,9 @@ typedef enum menu_tile {
     MT_END = 95,
     MT_TIMES = 96,
     MT_QUESTION = 97,
-    MT_TRAINER = 98
+    MT_TRAINER = 98,
+    MT_TRANSITION = 147
 } menu_tile;
-
-typedef enum option_names {
-    OPT_TEXT_SPEED,
-    OPT_BATTLE_ANIMATION, 
-    OPT_BATTLE_STYLE,
-    OPT_CANCEL
-} option_names;
 
 typedef struct menu {
     window_task WindowTask;
@@ -96,8 +90,8 @@ int CharToTile(int Ch);
 int TileToChar(int Tile);
 
 void PlaceBox(rect Rect);
-void PlaceText(point TileMin, const char *Text);
-void PlaceTextF(point TileMin, const char *Format, ...);
+void PlaceText(int TileX, int TileY, const char *Text);
+void PlaceTextF(int Tile, int TileY, const char *Format, ...);
 
 void PlaceInventory(const inventory *Inventory);
 
@@ -111,5 +105,10 @@ void MoveMenuCursorWrap(menu *Menu);
 void ClearWindow(void);
 void ClearWindowRect(rect Rect);
 void ClearBottomWindow(void);
+
+void DisplayTextBox(const char *Str, int Delay);
+void PlaceTextBox(const char *Str, int Delay);
+int FlashCursor(int Tick);
+void WaitOnFlash(void);
 
 #endif

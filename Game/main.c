@@ -15,61 +15,27 @@
 #include "options.h"
 #include "procs.h"
 #include "scalar.h"
-#include "read_buffer.h"
-#include "pallete.h"
-#include "window_map.h"
+#include "text.h"
 #include "world.h"
-#include "write_buffer.h"
-#include "read.h"
 #include "save.h"
 #include "state.h"
-#include "str.h"
 #include "win32.h"
 
 /*Macro Strings*/
 #define RPC_INTRO "What do you want to do?"
 
 /*Globals*/
-static const rect SaveRect = {4, 0, 20, 10};
+static const rect g_SaveRect = {4, 0, 20, 10};
 
 static BOOL g_IsPauseAttempt;
 
-static int MusicTick;
-
-static world World;
-
-static char g_Name[8];
-
-static int64_t StartCounter;
-
-void PopWindowState(void) {
-    RemoveWindowTask();
-    PopState();
-}
+static uint8_t g_TrainerX;
+static uint8_t g_TrainerY;
 
 /*Math Functions*/
-static int ReverseDir(int Dir) {
-    return (Dir + 2) % 4;
-}
-
-static void BeginFrame(void);
-static void EndFrame(void);
-
-static void NextFrame(void);
-
-static void NextFrame(void) {
-    EndFrame();
-    BeginFrame();
-}
-
-void SwitchMusic(void) {
-    MusicTick = 60;
-}
-
 void GS_MAIN_MENU(void);
 
 void GS_NORMAL(void);
-void GS_LEAPING(void);
 
 void GS_START_MENU(void);
 void GS_INVENTORY(void);
@@ -87,35 +53,6 @@ void GS_RED_PC_REPEAT_INTRO(void);
 
 void GS_REMOVE_WINDOW_TASK(void);
 
-static int IsPressABWithSound(void) {
-    int ABIsPressed = VirtButtons[BT_A] == 1 || VirtButtons[BT_B] == 1;
-    if(ABIsPressed) {
-        PlaySoundEffect(SFX_PRESS_AB);
-    }
-    return ABIsPressed;
-}
-
-
-void Pause(int Delay) {
-    while(Delay-- > 0) {
-        NextFrame();
-    }
-}
-
-int FlashCursor(int Tick) {
-    g_WindowMap[16][18] = Tick / 30 % 2 ? MT_BLANK : MT_FULL_VERT_ARROW;
-    return Tick + 1;
-}
-
-void WaitOnFlash(void) {
-    int Tick = 0;
-    while(!IsPressABWithSound()) {
-        Tick = FlashCursor(Tick);
-        NextFrame();
-    }
-    g_WindowMap[16][18] = MT_BLANK;
-}
-
 int GetMenuOptionSelected(menu *Menu, int CancelI) {
     if(VirtButtons[BT_A] == 1) {
         return Menu->SelectI; 
@@ -126,248 +63,7 @@ int GetMenuOptionSelected(menu *Menu, int CancelI) {
     return -1;
 }
 
-static const char *GetNewRestoreText(const char **Str) {
-    const char *Restore = NULL;
-    Restore = StrMovePastSpan(*Str, "%ITEM");
-    if(Restore) {
-        *Str = ItemNames[DisplayItem.ID];
-        goto out;
-    }
-    Restore = StrMovePastSpan(*Str, "%NAME");
-    if(Restore) {
-        *Str = g_Name;
-        goto out;
-    }
-out:
-    if(Restore && !**Str) {
-        *Str = Restore;
-        Restore = NULL;
-    }
-    return Restore;
-}
-
-static size_t GetTokenLength(const char *Str) {
-    size_t I;
-    for(I = 0; Str[I] && !isspace(Str[I]); I++); 
-    return I;
-}
-
-static void GoToNewLine(int *TileX, int *TileY) {
-    *TileX = 1;
-    *TileY += 2;
-    if(*TileY == 18) {
-        WaitOnFlash();
-        memcpy(&g_WindowMap[13][1], &g_WindowMap[14][1], 17);
-        memcpy(&g_WindowMap[15][1], &g_WindowMap[16][1], 17);
-        memset(&g_WindowMap[14][1], MT_BLANK, 17);
-        memset(&g_WindowMap[16][1], MT_BLANK, 18);
-        Pause(8);
-        memcpy(&g_WindowMap[14][1], &g_WindowMap[15][1], 17);
-        memset(&g_WindowMap[13][1], MT_BLANK, 17);
-        memset(&g_WindowMap[15][1], MT_BLANK, 17);
-        *TileY = 16;
-    }
-} 
-
-static void GoToNewSentence(int *TileX, int *TileY) {
-    *TileX = 1;
-    *TileY = 18;
-    WaitOnFlash();
-    memset(&g_WindowMap[14][1], MT_BLANK, 17);
-    memset(&g_WindowMap[16][1], MT_BLANK, 18);
-    Pause(8);
-    *TileY = 14;
-} 
-
-BOOL GetCurText(LPCSTR *Str, LPCSTR *Restore) {
-    if(!**Str) {
-        if(!*Restore) {
-            return FALSE;
-        } 
-        if(**Restore) {
-            *Str = *Restore;
-        }
-        *Restore = NULL;
-    }
-    if(!*Restore) {
-        *Restore = GetNewRestoreText(Str);
-    }
-    return TRUE;
-}
-
-void DisplayTextBox(const char *Str, int Delay) {
-    const char *Restore = NULL;
-    int TileX = 1;
-    int TileY = 14;
-
-    PlaceBox(BottomTextRect);
-    Pause(Delay + 1);
-    while(GetCurText(&Str, &Restore)) {
-        switch(*Str) {
-        case '\f':
-            GoToNewSentence(&TileX, &TileY);
-            Str++;
-            break;
-        case '\n':
-            GoToNewLine(&TileX, &TileY);
-            Str++;
-            break;
-        case '\0':
-            break;
-        default:
-            size_t TokLen = GetTokenLength(Str);
-            if(TokLen > 16) {
-                Str = "ERROR: TOKEN TOO LONG";
-            } else if(TileX + TokLen < 19) {
-                int Tile = CharToTile(*Str);
-                g_WindowMap[TileY][TileX] = Tile; 
-                TileX++;
-                Str++;
-            } else {
-                GoToNewLine(&TileX, &TileY);
-            }
-        }
-        if(!VirtButtons[BT_A] && !VirtButtons[BT_B]) {
-            Pause((int[]) {0, 2, 3}[Options.E[OPT_TEXT_SPEED].I]);
-        }
-        NextFrame();
-    }
-}
-
-void PlaceTextBox(const char *Str, int Delay) {
-    const char *Restore = NULL;
-    int TileX = 1;
-    int TileY = 14;
-
-    PlaceBox(BottomTextRect);
-    Pause(Delay); 
-
-    while(GetCurText(&Str, &Restore)) {
-        size_t TokLen = GetTokenLength(Str);
-        if(TokLen > 16) {
-            DisplayTextBox("ERROR: TOKEN TOO LONG", 0);
-            return;
-        } else if(TileX + TokLen < 19) {
-            int Tile = CharToTile(*Str);
-            g_WindowMap[TileY][TileX] = Tile; 
-            TileX++;
-            Str++;
-        } else if(TileY < 18) {
-            TileX = 1;
-            TileY += 2;
-        } else {
-            DisplayTextBox("ERROR: TEXT TOO LONG", 0);
-            return;
-        }
-    }
-}
-
-static void UpdateLeaping(void) {
-    if(GetState() == GS_LEAPING) {
-        /*PlayerUpdateJumpingAnimation*/
-        const static uint8_t PlayerDeltas[] = {0, 4, 6, 8, 9, 10, 11, 12};
-        uint8_t HalfTick = g_Player.Tick / 2;
-        uint8_t DeltaI = HalfTick < 8 ? HalfTick: 15 - HalfTick;
-        for(int I = 0; I < 4; I++) {
-            g_Sprites[I].Y -= PlayerDeltas[DeltaI];
-        }
-
-        /*CreateShadowQuad*/
-        if(HalfTick) {
-            sprite *ShadowQuad  = &g_Sprites[g_SpriteCount]; 
-            ShadowQuad[0] = (sprite) {72, 72, 255, 0};
-            ShadowQuad[1] = (sprite) {80, 72, 255, SPR_HORZ_FLAG};
-            ShadowQuad[2] = (sprite) {72, 80, 255, SPR_VERT_FLAG};
-            ShadowQuad[3] = (sprite) {80, 80, 255, SPR_HORZ_FLAG | SPR_VERT_FLAG};
-            g_SpriteCount += 4;
-        } else {
-            ReplaceState(GS_NORMAL);
-        }
-    }
-}
-
-static point GetObjectSpritePos(object *Object, int MapI) {
-    point QuadPt = {
-        Object->Pos.X - g_Player.Pos.X + 72,
-        Object->Pos.Y - g_Player.Pos.Y + 72
-    };
-
-    if(World.MapI != MapI) {
-        switch(GetMapDir(World.Maps, World.MapI)) {
-        case DIR_UP:
-            QuadPt.Y -= World.Maps[MapI].Height * 16;
-            break;
-        case DIR_LEFT:
-            QuadPt.X -= World.Maps[MapI].Width * 16;
-            break;
-        case DIR_DOWN:
-            QuadPt.Y += World.Maps[World.MapI].Height * 16;
-            break;
-        case DIR_RIGHT:
-            QuadPt.X += World.Maps[World.MapI].Width * 16;
-            break;
-        }
-    }
-
-    return QuadPt;
-}
-
-static void PushQuadSprite(object *Object, point Point) {
-    if(g_SpriteCount < _countof(g_Sprites)) {
-        sprite *SpriteQuad = &g_Sprites[g_SpriteCount];
-        UpdateAnimation(Object, SpriteQuad, Point);
-        g_SpriteCount += 4;
-    }
-}
-
-static void PushNPCSprite(int MapI, object *Object) {
-    point QuadPt = GetObjectSpritePos(Object, MapI);
-    if(ObjectInUpdateBounds(QuadPt)) {
-        PushQuadSprite(Object, QuadPt);
-    }
-}
-
-static void PushPlayerSprite(void) {
-    PushQuadSprite(&g_Player, (point) {72, 72});
-}
-
-static void UpdateStaticNPC(object *Object) {
-    if(Object->Tick > 0) {
-        Object->Tick--; 
-    } else {
-        Object->Dir = Object->StartingDir;
-    }
-}
-
-static void UpdateObjects(BOOL IsObjectActive) {
-    g_SpriteCount = 0;
-    UpdatePlayerMovement();
-    PushPlayerSprite();
-    UpdateLeaping(); 
-    for(int MapI = 0; MapI < (int) _countof(World.Maps); MapI++) {
-        for(int ObjI = 0; ObjI < World.Maps[MapI].ObjectCount; ObjI++) {
-            object *Object = &World.Maps[MapI].Objects[ObjI];
-
-            if(IsObjectActive) {
-                if(Object->Speed == 0) {
-                    UpdateStaticNPC(Object);
-                } else if(Object->Tick > 0) {
-                    MoveEntity(Object);
-                } else {
-                    RandomMove(&World.Maps[MapI], Object);
-                }
-            }
-
-            PushNPCSprite(MapI, Object);
-        }
-    }
-}
-
-static void UpdatePallete(void) {
-    SetPallete(World.Maps[World.MapI].PalleteI);
-}
-
-void FadeOutMusic(void) {
+static void FadeOutMusic(void) {
     int Tick = 60;
     while(Tick-- > 0) {
         MusicSetVolume(Tick / 60.0F);
@@ -376,7 +72,7 @@ void FadeOutMusic(void) {
 }
 
 static inline int TrainerGetLeft(void) {
-    return (8 - g_TrainerWidth) / 2; 
+    return (7 - g_TrainerWidth) / 2; 
 }
 
 static inline int TrainerGetTop(void) {
@@ -385,6 +81,9 @@ static inline int TrainerGetTop(void) {
 
 static void PlaceTrainer(int BoundX, int BoundY) {
     int TileI = MT_TRAINER;
+
+    g_TrainerX = BoundX;
+    g_TrainerY = BoundY;
 
     int StartX = TrainerGetLeft() + BoundX;
     int StartY = TrainerGetTop() + BoundY; 
@@ -399,7 +98,7 @@ static void PlaceTrainer(int BoundX, int BoundY) {
     }
 }
 
-static void FadeInOak(void) {
+static void FadeInTrainer(void) {
     SetPalleteTransition(PAL_OAK, 1, 1, 1);
     Pause(8);
     SetPalleteTransition(PAL_OAK, 2, 2, 2);
@@ -445,6 +144,7 @@ static void ShiftTrainerRowsRight(int StartX, int StartY, int EndY) {
         for(int X = EndX; X-- > StartX; ) {
             g_WindowMap[Y][X + 1] = g_WindowMap[Y][X];
         }
+        g_WindowMap[Y][StartX] = MT_BLANK;
     } 
     Pause(1);
 }
@@ -454,18 +154,19 @@ static void ShiftTrainerRowsLeft(int StartX, int StartY, int EndY) {
         for(int X = StartX; X < EndX; X++) {
             g_WindowMap[Y][X - 1] = g_WindowMap[Y][X];
         }
+        g_WindowMap[Y][EndX - 1] = MT_BLANK;
     } 
     Pause(1);
 }
 
-static void ShiftRedRight(void) {
+static void ShiftTrainerRight(void) {
     for(int X = 6; X < 12; X++) {
         ShiftTrainerRowsRight(X, 4, 6);
         ShiftTrainerRowsRight(X, 6, 11); 
     }
 }
 
-static void ShiftRedLeft(void) {
+static void ShiftTrainerLeft(void) {
     for(int X = 12; X-- > 6; ) {
         ShiftTrainerRowsLeft(X, 6, 11); 
         ShiftTrainerRowsLeft(X, 4, 6);
@@ -479,7 +180,7 @@ static void PresentOak(void) {
     ClearPallete();
     ReadTrainerTileData("Oak");
     PlaceTrainer(6, 4);
-    FadeInOak();
+    FadeInTrainer();
     DisplayTextBox(
         "Hello there! Welcome to the world of POKÈMON!\f"
         "My name is OAK! People call me the POKÈMON PROF!",
@@ -491,7 +192,7 @@ static void PresentOak(void) {
 
 static void PresentNidorino(void) {
     ReadHorzFlipTrainerTileData("Nidorino");
-    PlaceTrainer(5, 4);
+    PlaceTrainer(6, 4);
     SlideInTrainer();
     DisplayTextBox(
         "This world is inhabited by creatures called POKÈMON!",
@@ -517,15 +218,15 @@ static void PlaceNameLine(void) {
 }
 
 static void PlaceLowercaseLetters(void) {
-    PlaceText((point) {2,  5}, "a b c d e f g h i"); 
-    PlaceText((point) {2,  7}, "j k l m n o p q r");
-    PlaceText((point) {2,  9}, "s t u v w x y z  ");
+    PlaceText(2, 5, "a b c d e f g h i"); 
+    PlaceText(2, 7, "j k l m n o p q r");
+    PlaceText(2, 9, "s t u v w x y z  ");
 }
 
 static void PlaceCapitalLetters(void) {
-    PlaceText((point) {2,  5}, "A B C D E F G H I"); 
-    PlaceText((point) {2,  7}, "J K L M N O P Q R");
-    PlaceText((point) {2,  9}, "S T U V W X Y Z  ");
+    PlaceText(2, 5, "A B C D E F G H I"); 
+    PlaceText(2, 7, "J K L M N O P Q R");
+    PlaceText(2, 9, "S T U V W X Y Z  ");
 }
 
 static void TileToStr(char *Str, int StartX, int EndX, int TileY) {
@@ -537,15 +238,15 @@ static void TileToStr(char *Str, int StartX, int EndX, int TileY) {
 
 static void SwitchCase(int CursorX, int CursorY) {
     if(g_WindowMap[CursorY][CursorX + 1] == MT_LOWERCASE_L) {
-        PlaceText((point) {2, 15}, "UPPER CASE");
+        PlaceText(2, 15, "UPPER CASE");
         PlaceLowercaseLetters();
     } else {
-        PlaceText((point) {2, 15}, "lower case");
+        PlaceText(2, 15, "lower case");
         PlaceCapitalLetters();
     }
 }
 
-static void PromptName(void) {
+static void PromptName(char *Name) {
 start_prompt:
     int CursorX = 1;
     int CursorY = 5;
@@ -556,11 +257,11 @@ start_prompt:
 
     PlaceBox((rect) {0, 4, 20, 15});
     PlaceNameLine();
-    PlaceText((point) {0,  1}, "YOUR NAME?");
+    PlaceText(0, 1, "YOUR NAME?");
     PlaceCapitalLetters();
-    PlaceText((point) {2,  11}, "* ( ) : ; [ ] \1 \2");
-    PlaceText((point) {2,  13}, "- ? ! ^ | / . , \3");
-    PlaceText((point) {2,  15}, "lower case");
+    PlaceText(2, 11,  "* ( ) : ; [ ] \1 \2");
+    PlaceText(2, 13, "- ? ! ^ | / . , \3");
+    PlaceText(2, 15, "lower case");
 
     while(1) {
         g_WindowMap[CursorY][CursorX] = MT_BLANK;
@@ -603,11 +304,12 @@ start_prompt:
                 if(NameX == 10) {
                     goto start_prompt;
                 } 
-                TileToStr(g_Name, 10, NameX, 2);
+                TileToStr(Name, 10, NameX, 2);
                 ClearWindow();
                 Pause(30);
                 return;
             } else {
+                PlaySoundEffect(SFX_PRESS_AB);
                 g_WindowMap[2][NameX] = g_WindowMap[CursorY][CursorX + 1];
                 if(NameX != 16) {
                     g_WindowMap[3][NameX] = MT_MIDDLE_SCORE;
@@ -634,72 +336,218 @@ start_prompt:
     }
 }
 
-static void PresentRed(void) {
+typedef struct name_select {
+    char *Name;
+    const char *WhoseName;
+    const char *PresetNames[3];
+} name_select;
+
+static void UsePresetName(name_select *Select, menu *Menu) {
+    strcpy(Select->Name, Select->PresetNames[Menu->SelectI - 1]);
+    ClearWindowRect(Menu->Rect);
+    ShiftTrainerLeft();
+}
+
+static void PresentNameSelect(name_select *Select) {
+    ShiftTrainerRight();
+
+    char MenuText[64];
+    snprintf(
+        MenuText, 
+        _countof(MenuText), 
+        "NEW NAME\n%s\n%s\n%s", 
+        Select->PresetNames[0], 
+        Select->PresetNames[1],
+        Select->PresetNames[2] 
+    ); 
+
+    menu Menu = {
+        .WindowTask.Type = TT_MENU,
+        .Rect = {0, 0, 11, 12},
+        .Text = MenuText,
+        .TextY = 2,
+        .EndI = 4
+    };
+
+    PlaceMenu(&Menu);
+    PlaceText(3, 0, "NAME"); 
+    NextFrame();
+
+    Select->Name[0] = '\0';
+    while(!Select->Name[0]) {
+        MoveMenuCursor(&Menu);
+        switch(GetMenuOptionSelected(&Menu, -1)) {
+        case 0:
+            PlaySoundEffect(SFX_PRESS_AB);
+            PromptName(Select->Name);
+            PlaceTrainer(6, 4);
+            break;
+        case 1 ... 2:
+            PlaySoundEffect(SFX_PRESS_AB);
+            UsePresetName(Select, &Menu);
+            break;
+        }
+        NextFrame();
+    }
+}
+
+static void NameRed(void) {
     ReadTrainerTileData("Red");
-    PlaceTrainer(5, 4);
+    PlaceTrainer(6, 4);
     SlideInTrainer();
     DisplayTextBox(
         "First, what is your name?",
         0
     );
     WaitOnFlash();
-    ShiftRedRight();
 
-    menu RedMenu = {
-        .WindowTask.Type = TT_MENU,
-        .Rect = {0, 0, 11, 12},
-        .Text = "NEW NAME\nRED\nASH\nJACK",
-        .TextY = 2,
-        .EndI = 4
+    name_select Select = {
+        .Name = g_Name,
+        .WhoseName = "YOUR NAME", 
+        .PresetNames = {"RED", "ASH", "JACK"}
     };
-    PlaceMenu(&RedMenu);
-    PlaceText((point) {3, 0}, "NAME"); 
-    NextFrame();
+    PresentNameSelect(&Select);
 
-    g_Name[0] = '\0';
-    while(!g_Name[0]) {
-        MoveMenuCursor(&RedMenu);
-        switch(GetMenuOptionSelected(&RedMenu, -1)) {
-        case 0:
-            PromptName();
-            PlaceTrainer(5, 4);
-            break;
-        case 1:
-            memcpy(g_Name, "RED", sizeof("RED"));
-            break;
-        case 2:
-            memcpy(g_Name, "ASH", sizeof("ASH"));
-            break;
-        case 3:
-            memcpy(g_Name, "JACK", sizeof("JACK"));
-            break;
-        }
-        NextFrame();
-    }
-    if(RedMenu.SelectI != 0) {
-        ClearWindowRect(RedMenu.Rect);
-        ShiftRedLeft();
-    }
     DisplayTextBox(
-        "Right! So your name is %NAME!",
+        "Right! So your name is @RED!",
         0
     );
     WaitOnFlash();
+    FadeOutTrainer();
 }
 
-void StartWorld(void) {
-    StartSaveSec = 0;
-    StartCounter = QueryPerfCounter();
-    ClearWindow();
-    ReadOverworldMap(&World, 0, (point) {0, 2});
-    point Load = World.Maps[World.MapI].Loaded;
-    World.MusicI = OverworldMusic[Load.Y][Load.X];
+static void NameBlue(void) {
+    ReadTrainerTileData("Blue");
+    PlaceTrainer(6, 4);
+    FadeInTrainer();
+    DisplayTextBox(
+        "This is my grand-son. He' been your rival since you were a baby.\f"
+        "...Erm, what is his name again?",
+        0
+    );
+    WaitOnFlash();
+
+    name_select Select = {
+        .Name = g_Rival,
+        .WhoseName = "RIVAL' NAME", 
+        .PresetNames = {"BLUE", "GARY", "JOHN"}
+    };
+    PresentNameSelect(&Select);
+    DisplayTextBox(
+        "That' right! I remember now! His name is @BLUE!",
+        0
+    );
+    WaitOnFlash();
+    FadeOutTrainer();
+}
+
+static void ToWorldTransition(void) {
+    PlaySoundEffect(SFX_SHRINK);
+    ReadTileData("Transition", &g_WindowData[MT_TRANSITION], 32);
+
+    g_WindowMap[4][7] = MT_BLANK;
+    Pause(1);
+
+    g_WindowMap[4][8] = MT_BLANK;
+    g_WindowMap[5][7] = MT_BLANK;
+    g_WindowMap[6][7] = MT_BLANK;
+    g_WindowMap[5][8] = MT_TRANSITION;
+    g_WindowMap[7][7] = MT_TRANSITION + 1;
+    g_WindowMap[8][7] = MT_TRANSITION + 2;
+    g_WindowMap[10][7] = MT_TRANSITION + 3;
+    Pause(1);
+
+    g_WindowMap[4][9] = MT_BLANK;
+    g_WindowMap[5][9] = MT_TRANSITION + 4;
+    g_WindowMap[6][8] = MT_TRANSITION + 5;
+    g_WindowMap[6][9] = MT_TRANSITION + 7;
+    g_WindowMap[7][8] = MT_TRANSITION + 6;
+    g_WindowMap[8][7] = MT_TRANSITION + 2;
+    g_WindowMap[8][8] = MT_TRANSITION + 8;
+    g_WindowMap[9][8] = MT_TRANSITION + 9;
+    g_WindowMap[10][8] = MT_TRANSITION + 10;
+    Pause(1);
+
+    g_WindowMap[5][10] = MT_BLANK;
+    g_WindowMap[6][10] = MT_BLANK;
+    g_WindowMap[7][9] = MT_TRANSITION + 11;
+    g_WindowMap[7][10] = MT_TRANSITION + 16;
+    g_WindowMap[8][9] = MT_TRANSITION + 12;
+    g_WindowMap[9][9] = MT_TRANSITION + 14;
+    g_WindowMap[10][9] = MT_TRANSITION + 15;
+    Pause(1);
+
+    g_WindowMap[9][10] = MT_BLANK;
+    g_WindowMap[8][10] = MT_TRANSITION + 13;
+    g_WindowMap[10][10] = MT_TRANSITION + 17;
+    Pause(30);
+
+    g_WindowMap[5][8] = MT_BLANK;
+    g_WindowMap[7][7] = MT_BLANK;
+    g_WindowMap[8][7] = MT_BLANK;
+    g_WindowMap[10][7] = MT_BLANK;
+    Pause(1);
+    
+    g_WindowMap[5][8] = MT_BLANK;
+    g_WindowMap[5][9] = MT_BLANK;
+    g_WindowMap[10][8] = MT_BLANK;
+    g_WindowMap[6][8] = MT_TRANSITION;
+    g_WindowMap[6][9] = MT_TRANSITION + 4;
+    g_WindowMap[7][8] = MT_TRANSITION + 18;
+    g_WindowMap[8][8] = MT_TRANSITION + 19;
+    g_WindowMap[9][8] = MT_TRANSITION + 20;
+    Pause(1);
+
+    g_WindowMap[7][10] = MT_BLANK;
+    g_WindowMap[10][9] = MT_BLANK;
+    g_WindowMap[7][9] = MT_TRANSITION + 21;
+    g_WindowMap[8][9] = MT_TRANSITION + 22;
+    g_WindowMap[9][9] = MT_TRANSITION + 23;
+    Pause(1);
+
+    g_WindowMap[8][10] = MT_BLANK;
+    g_WindowMap[10][10] = MT_BLANK;
+    Pause(30);
+    
+    ClearWindowRect((rect) {0, 0, 20, 12});
+    PushBasicPlayerSprite();
+    SetPalleteTransition(PAL_OAK, 1, 1, 1);
+    Pause(8);
+    SetPalleteTransition(PAL_OAK, 2, 2, 2);
+    Pause(8);
+    g_SpriteCount = 0;
+    g_MusicI = MUS_INVALID;
     SwitchMusic();
-    PlaceViewMap(&World, 0);
+    ClearWindow();
+    Pause(60);
+}
+
+static void Outro(void) {
+    ReadTrainerTileData("Red");
+    PlaceTrainer(6, 4);
+    FadeInTrainer();
+    DisplayTextBox(
+        "@RED!\f"
+        "Your very own POKÈMON legend is about to unfold\f"
+        "A world of dreams and adventures with POKÈMON awaits! Let' go!",
+        0
+    );
+    ToWorldTransition();
+}
+
+static void StartWorld(void) {
+    ReadMap(0, "PlayerHouse2");
+    PlaceViewMap(0);
     UpdatePallete();
+    PushBasicPlayerSprite();
+    Pause(15);
+    g_MusicI = MUS_PALLETE_TOWN;
+    SwitchMusic();
+    g_Player.Dir = DIR_UP;
     g_TileMapX = 0;
     g_TileMapY = 0;
     ActivateWorld();
+    StartSaveCounter();
     ReplaceState(GS_NORMAL);
 }
 
@@ -709,24 +557,29 @@ static void StartGame(void) {
     
     PresentOak();
     PresentNidorino();
-    PresentRed();
+    NameRed();
+    NameBlue();
+    Outro();
 
     StartWorld();
 }
 
 static void ContinueGame(void) {
     ClearWindowStack();
-    ReadSave(&World);
-    ReplaceState(GS_NORMAL);
+    memset(g_WindowMap, MT_BLANK, sizeof(g_WindowMap));
+    ReadSave();
     SwitchMusic();
     Pause(30);
-    PlaceViewMap(&World, 0);
+    ClearWindow();
+    PlaceViewMap(0);
     UpdatePallete();
     ActivateWorld();
-    StartCounter = QueryPerfCounter();
+    StartSaveCounter();
+    ReplaceState(GS_NORMAL);
 } 
 
 static void ClearContinuePrompt(void) {
+    ResetSaveSec();
     PopWindowTask();
     ClearWindow();
     Pause(30);
@@ -736,8 +589,8 @@ static void ClearContinuePrompt(void) {
 static void OpenContinuePrompt(void) {
     BOOL ContinuePromptOpen = TRUE;
     PlaySoundEffect(SFX_PRESS_AB); 
-    PushWindowTask(&ContinueSaveRect.WindowTask);
-    memset(g_TileMap, 255, sizeof(g_TileMap));
+    PushWindowTask(&g_ContinueSaveRect.WindowTask);
+    PlaceSave(g_ContinueSaveRect.Rect);
     while(ContinuePromptOpen) {
         NextFrame();
         if(VirtButtons[BT_A] == 1) {
@@ -750,11 +603,6 @@ static void OpenContinuePrompt(void) {
     }
 }
 
-void PushOptionsMenu(void) {
-    PlaySoundEffect(SFX_PRESS_AB); 
-    PushWindowTask(&Options.WindowTask);
-    PushState(GS_OPTIONS);
-}
 
 void GS_MAIN_MENU(void) {
     MoveMenuCursor(&MainMenu);
@@ -763,7 +611,7 @@ void GS_MAIN_MENU(void) {
         StartGame();
         break;
     case 1: /*OPTIONS*/
-        PushOptionsMenu();
+        OpenOptions();
         break;
     }
 }
@@ -778,177 +626,43 @@ void GS_CONTINUE_MENU(void) {
         StartGame();
         break;
     case 2: /*OPTIONS*/ 
-        PushOptionsMenu();
+        OpenOptions();
         break;
     } 
 }
 
 static void LoadDoorMap(point DoorPoint) {
-    quad_info QuadInfo = GetQuadInfo(&World, DoorPoint); 
-    map *OldMap = &World.Maps[QuadInfo.MapI]; 
+    quad_info QuadInfo = GetQuadInfo(DoorPoint); 
+    map *OldMap = &g_Maps[QuadInfo.MapI]; 
 
     for(int I = 0; I < OldMap->DoorCount; I++) {
         const door *Door = &OldMap->Doors[I];
         if(EqualPoints(Door->Pos, QuadInfo.Point)) {
             /*DoorToDoor*/
-            ReadMap(&World, !QuadInfo.MapI, Door->Path);
-            World.MapI = !QuadInfo.MapI;
+            ReadMap(!QuadInfo.MapI, Door->Path);
+            g_MapI = !QuadInfo.MapI;
             UpdatePallete();
             g_Player.Pos = QuadPtToPt(Door->DstPos);
-            GetLoadedPoint(&World, !QuadInfo.MapI, Door->Path);
+            GetLoadedPoint(!QuadInfo.MapI, Door->Path);
 
             /*CompleteTransition*/
             g_TileMapX = 0;
             g_TileMapY = 0;
 
             memset(OldMap, 0, sizeof(*OldMap));
-            PlaceViewMap(&World, 0);
+            PlaceViewMap(0);
             break;
         } 
     }
 }
 
-void TranslateQuadRectToTiles(point NewPoint) {
-    point TileMin = {0};
-    rect QuadRect = {0};
-
-    switch(g_Player.Dir) {
-    case DIR_UP:
-        TileMin.X = (g_TileMapX / 8) & 31;
-        TileMin.Y = (g_TileMapY / 8 + 30) & 31;
-
-        QuadRect = (rect) {
-            .Left = NewPoint.X - 4,
-            .Top = NewPoint.Y - 4, 
-            .Right = NewPoint.X + 6,
-            .Bottom = NewPoint.Y - 3
-        };
-        break;
-    case DIR_LEFT:
-        TileMin.X = (g_TileMapX / 8 + 30) & 31;
-        TileMin.Y = (g_TileMapY / 8) & 31;
-
-        QuadRect = (rect) {
-            .Left = NewPoint.X - 4,
-            .Top = NewPoint.Y - 4,
-            .Right = NewPoint.X - 3,
-            .Bottom = NewPoint.Y + 5
-        };
-        break;
-    case DIR_DOWN:
-        TileMin.X = (g_TileMapX / 8) & 31;
-        TileMin.Y = (g_TileMapY / 8 + 18) & 31;
-
-        QuadRect = (rect) {
-            .Left = NewPoint.X - 4,
-            .Top = NewPoint.Y + 4,
-            .Right = NewPoint.X + 6,
-            .Bottom = NewPoint.Y + (GetState() == GS_LEAPING ? 6 : 5)
-        };
-        break;
-    case DIR_RIGHT:
-        TileMin.X = (g_TileMapX / 8 + 20) & 31;
-        TileMin.Y = (g_TileMapY / 8) & 31;
-
-        QuadRect = (rect) {
-            .Left = NewPoint.X + 5,
-            .Top = NewPoint.Y - 4,
-            .Right = NewPoint.X + 6,
-            .Bottom = NewPoint.Y + 5
-        };
-        break;
-    }
-    PlaceMap(&World, TileMin, QuadRect);
-}
-
-static void MovePlayerSync(void) {
-    point FacingPoint = GetFacingPoint(g_Player.Pos, g_Player.Dir);
-    g_Player.IsMoving = 1;
-    g_Player.Tick = 16;
-    TranslateQuadRectToTiles(FacingPoint);
-    while(g_Player.IsMoving) {
-        UpdateObjects(FALSE);
-        NextFrame();
-    }
-} 
-
-static void TransitionColors(void) {
-    Pause(8);
-    g_Bitmap.Colors[0] = g_Palletes[World.Maps[World.MapI].PalleteI][1]; 
-    g_Bitmap.Colors[1] = g_Palletes[World.Maps[World.MapI].PalleteI][2]; 
-    g_Bitmap.Colors[2] = g_Palletes[World.Maps[World.MapI].PalleteI][3]; 
-    Pause(8);
-    g_Bitmap.Colors[0] = g_Palletes[World.Maps[World.MapI].PalleteI][2]; 
-    g_Bitmap.Colors[1] = g_Palletes[World.Maps[World.MapI].PalleteI][3]; 
-    Pause(8);
-    g_Bitmap.Colors[0] = g_Palletes[World.Maps[World.MapI].PalleteI][3]; 
-    Pause(8);
-}
-
-static point GetLoadedDeltaPoint(point NewPoint) {
-    point DeltaPoint = {};
-    map *Map = &World.Maps[World.MapI];
-    if(NewPoint.X == 4) {
-        DeltaPoint.X = -1;
-    } else if(NewPoint.X == Map->Width - 4) {
-        DeltaPoint.X = 1;
-    }
-    if(NewPoint.Y == 4) {
-        DeltaPoint.Y = -1;
-    } else if(NewPoint.Y == Map->Height - 4) {
-        DeltaPoint.Y = 1;
-    }
-    return DeltaPoint;
-}
-
-static point GetNewStartPos(point NewPoint) {
-    point ReverseDirPoint = DirPoints[ReverseDir(g_Player.Dir)];
-    point StartPos = AddPoints(NewPoint, ReverseDirPoint); 
-    StartPos.X *= 16;
-    StartPos.Y *= 16;
-    return StartPos;
-} 
-
-static void MovePlayerAsync(quad_info NewQuadInfo, int Tick) {
-    g_Player.IsMoving = TRUE;
-    g_Player.Tick = Tick;
-
-    if(g_InOverworld) {
-        g_Player.Pos = GetNewStartPos(NewQuadInfo.Point);
-        if(World.MapI != NewQuadInfo.MapI) {
-            World.MapI = NewQuadInfo.MapI;
-            point Load = World.Maps[World.MapI].Loaded;
-            World.MusicI = OverworldMusic[Load.Y][Load.X];
-            SwitchMusic();
-        }
-        point AddTo = GetLoadedDeltaPoint(NewQuadInfo.Point);
-        if(AddTo.X == 0 || !LoadAdjacentMap(&World, AddTo.X, 0)) {
-            if(AddTo.Y != 0) {
-                LoadAdjacentMap(&World, 0, AddTo.Y);
-            }
-        }
-    }
-
-    TranslateQuadRectToTiles(NewQuadInfo.Point);
-}
-
-static BOOL IsSolidPropForPlayer(quad_prop Prop) {
-    return (
-        g_Player.Tile == ANIM_SEAL ? 
-            Prop == QUAD_PROP_WATER : 
-            Prop == QUAD_PROP_NONE || Prop == QUAD_PROP_EXIT
-    ); 
-}
-
 static void GoThroughDoor(point DoorPoint) {
-    MovePlayerSync();
+    MovePlayerSync(0);
     TransitionColors();
     LoadDoorMap(DoorPoint);
 }
 
 void MovePlayer(quad_info NewQuadInfo, quad_info OldQuadInfo) {
-    ReplaceState(GS_NORMAL);
-    /*MovePlayer*/
     if(NewQuadInfo.Prop == QUAD_PROP_DOOR) { 
         if(!g_InOverworld) {
             PlaySoundEffect(SFX_GO_OUTSIDE);
@@ -959,16 +673,15 @@ void MovePlayer(quad_info NewQuadInfo, quad_info OldQuadInfo) {
         }
     } else if(g_Player.Dir == DIR_DOWN && NewQuadInfo.Prop == QUAD_PROP_EDGE) {
         PlaySoundEffect(SFX_LEDGE);
-        MovePlayerAsync(NewQuadInfo, 32);
-        ReplaceState(GS_LEAPING);
+        PlayerLeap();
     } else if(IsSolidPropForPlayer(NewQuadInfo.Prop)) {
         MovePlayerAsync(NewQuadInfo, 16);
     } else if(g_Player.Dir == DIR_DOWN && OldQuadInfo.Prop == QUAD_PROP_EXIT) {
         PlaySoundEffect(SFX_GO_OUTSIDE);
-        UpdateObjects(FALSE);
+        UpdateObjects(0);
         TransitionColors();
         LoadDoorMap(OldQuadInfo.Point);
-        MovePlayerSync();
+        MovePlayerSync(0);
     } else {
         PlaySoundEffect(SFX_COLLISION);
         g_Player.Tick = 16;
@@ -1016,8 +729,8 @@ void GS_NORMAL(void) {
             point NewPoint = GetFacingPoint(g_Player.Pos, g_Player.Dir);
 
             /*FetchQuadProp*/
-            quad_info OldQuadInfo = GetQuadInfo(&World, PtToQuadPt(g_Player.Pos));
-            quad_info NewQuadInfo = GetQuadInfo(&World, NewPoint);
+            quad_info OldQuadInfo = GetQuadInfo(PtToQuadPt(g_Player.Pos));
+            quad_info NewQuadInfo = GetQuadInfo(NewPoint);
             NewPoint = NewQuadInfo.Point;
 
             /*FetchObject*/
@@ -1028,8 +741,8 @@ void GS_NORMAL(void) {
             }
 
             object *FacingObject = NULL; 
-            for(int ObjI = 0; ObjI < World.Maps[World.MapI].ObjectCount; ObjI++) {
-                object *Object = &World.Maps[World.MapI].Objects[ObjI];
+            for(int ObjI = 0; ObjI < g_Maps[g_MapI].ObjectCount; ObjI++) {
+                object *Object = &g_Maps[g_MapI].Objects[ObjI];
                 point ObjOldPt = PtToQuadPt(Object->Pos);
                 if(Object->Tick > 0) {
                     point ObjDirPt = NextPoints[Object->Dir];
@@ -1067,20 +780,20 @@ void GS_NORMAL(void) {
                             FacingObject->Tick = 120;
                         }
                         FacingObject->Dir = ReverseDir(g_Player.Dir);
-                        UpdateObjects(TRUE);
+                        UpdateObjects(0);
                         DisplayTextBox(FacingObject->Str, 16);
                         WaitOnFlash();
                         ClearWindow();
                     } else if(IsComputer) {
                         PlaySoundEffect(SFX_TURN_ON_PC);
-                        PlaceTextBox("%NAME turned on the PC.", 16);
+                        PlaceTextBox("@RED turned on the PC.", 16);
                         HasTextBox = true;
                         WaitOnFlash();
                         PushState(GS_RED_PC_MAIN);
                         PushWindowTask(&RedPCMenu.WindowTask);
                         PlaceTextBox(RPC_INTRO, 0);
                     } else {
-                        map *Map = &World.Maps[NewQuadInfo.MapI];
+                        map *Map = &g_Maps[NewQuadInfo.MapI];
                         const char *Str = GetTextFromPos(Map, NewPoint);
                         DisplayTextBox(Str, 16);
                         WaitOnFlash();
@@ -1101,16 +814,7 @@ void GS_NORMAL(void) {
             }
         }
     }
-    UpdateObjects(!g_IsPauseAttempt);
-}
-
-void GS_LEAPING(void) {
-    g_IsPauseAttempt |= (VirtButtons[BT_START] == 1);
-    UpdateObjects(FALSE);
-}
-
-void UpdateSaveSec(void) {
-    SaveSec = (int) MinInt64(INT_MAX, StartSaveSec + GetSecondsElapsed(StartCounter));
+    UpdateObjects(g_IsPauseAttempt ? 0 : US_RANDOM_MOVE);
 }
 
 void GS_START_MENU(void) {
@@ -1134,7 +838,7 @@ void GS_START_MENU(void) {
         case 3: /*SAVE*/
             PlaySoundEffect(SFX_PRESS_AB); 
             UpdateSaveSec();
-            PlaceSave(SaveRect);
+            PlaceSave(g_SaveRect);
 
             Pause(16);
             DisplayTextBox("Would you like to\nSAVE the game?", 4);
@@ -1143,9 +847,7 @@ void GS_START_MENU(void) {
             ReplaceState(GS_SAVE);
             break;
         case 4: /*OPTIONS*/
-            PlaySoundEffect(SFX_PRESS_AB); 
-            PushWindowTask(&Options.WindowTask);
-            PushState(GS_OPTIONS);
+            OpenOptions();
             break;
         case 5: /*EXIT*/
             PlaySoundEffect(SFX_PRESS_AB); 
@@ -1217,13 +919,13 @@ void GS_SAVE(void) {
         PlaySoundEffect(SFX_PRESS_AB); 
         /*RemoveYesNoSavePrompt*/
         RemoveWindowTask();
-        PlaceSave(SaveRect);
+        PlaceSave(g_SaveRect);
         PlaceTextBox("Now saving...", 0);
 
-        if(WriteSaveHeader() && WriteSave(&World)) {
+        if(WriteSaveHeader() && WriteSave()) {
             Pause(120);
             PlaySoundEffect(SFX_SAVE);
-            DisplayTextBox("%NAME saved\nthe game!", 0);
+            DisplayTextBox("@RED saved\nthe game!", 0);
             Pause(10);
         } else {
             Pause(60);
@@ -1270,7 +972,7 @@ void GS_TOSS(void) {
     UpdateDisplayItem(g_Inventory);
     if(VirtButtons[BT_A] == 1) {
         PlaySoundEffect(SFX_PRESS_AB);
-        DisplayTextBox("Is it OK to toss\n%ITEM?", 0);
+        DisplayTextBox("Is it OK to toss\n@ITEM?", 0);
         PushWindowTask(&ConfirmTossMenu.WindowTask);
         ReplaceState(GS_CONFIRM_TOSS);
     } else if(VirtButtons[BT_B] == 1) {
@@ -1287,7 +989,7 @@ void GS_CONFIRM_TOSS(void) {
         PlaySoundEffect(SFX_PRESS_AB);
         RemoveWindowTask();
         RemoveItem(g_Inventory, DisplayItem.Count); 
-        DisplayTextBox("Threw away\n%ITEM.", 0);
+        DisplayTextBox("Threw away\n@ITEM.", 0);
         WaitOnFlash();
         RemoveWindowTask();
         PopState();
@@ -1324,33 +1026,34 @@ static void OpenInventoryInPC(red_pc_select_i SelectI) {
 void GS_RED_PC_MAIN(void) {
     MoveMenuCursor(&RedPCMenu);
     switch(GetMenuOptionSelected(&RedPCMenu, 3)) {
-    case 0:
-    case 1:
-    case 2:
+    case 0 ... 2:
         OpenInventoryInPC(RedPCMenu.SelectI);
         break;
     case 3:
         PlaySoundEffect(SFX_TURN_OFF_PC);
         HasTextBox = false;
-        PopWindowState();
+        RemoveWindowTask();
+        PopState();
         break;
     }
 }
 
 void GS_RED_PC_TOSS(void) {
     MoveMenuCursor(&ConfirmTossMenu);
-    bool Toss = VirtButtons[BT_A] == 1 && ConfirmTossMenu.SelectI == 0;
-    bool Cancel = (VirtButtons[BT_A] == 1 && ConfirmTossMenu.SelectI == 1) || VirtButtons[BT_B]; 
-    if(Toss) {
+    switch(GetMenuOptionSelected(&ConfirmTossMenu, 1)) {
+    case 0: /*YES*/
         PlaySoundEffect(SFX_PRESS_AB);
         RemoveWindowTask();
         RemoveItem(&g_RedPC, DisplayItem.Count);
-        DisplayTextBox("Threw away\n%ITEM.", 0);
+        DisplayTextBox("Threw away\n@ITEM.", 0);
         WaitOnFlash();
-    } else if(Cancel) {
+        PopState();
+        break;
+    case 1: /*NO*/
         PlaySoundEffect(SFX_PRESS_AB);
         RemoveWindowTask();
         PopState();
+        break;
     }
 }
 
@@ -1362,20 +1065,20 @@ void GS_RED_PC_ITEM(void) {
         case IS_WITHDRAW:
             PlaySoundEffect(SFX_WITHDRAW_DEPOSIT);
             MoveItem(&g_Bag, &g_RedPC, DisplayItem.Count);
-            DisplayTextBox("Withdrew\n%ITEM", 0); 
+            DisplayTextBox("Withdrew\n@ITEM", 0); 
             WaitOnFlash();
             PopState();
             break;
         case IS_DEPOSIT:
             PlaySoundEffect(SFX_WITHDRAW_DEPOSIT);
             MoveItem(&g_RedPC, &g_Bag, DisplayItem.Count);
-            DisplayTextBox("%ITEM was\nstored via PC.", 0); 
+            DisplayTextBox("@ITEM was\nstored via PC.", 0); 
             WaitOnFlash();
             PopState();
             break;
         case IS_TOSS:
             PlaySoundEffect(SFX_PRESS_AB);
-            DisplayTextBox("Is it OK to toss\n%ITEM?", 0);
+            DisplayTextBox("Is it OK to toss\n@ITEM?", 0);
             PushWindowTask(&ConfirmTossMenu.WindowTask);
             ReplaceState(GS_RED_PC_TOSS);
             break;
@@ -1409,10 +1112,12 @@ static void PlayGame(void) {
     SetPlayerToDefault();
 
     ReadTileData("Menu", &g_WindowData[2], 200);
+    ReadTileData("SpriteData", g_SpriteData, 255);
 
     /*InitMainMenu*/
     if(DoesSaveExist()) {
         PushWindowTask(&ContinueMenu.WindowTask);
+        PlaceMenu(&ContinueMenu);
         ReadSaveHeader();
         PushState(GS_CONTINUE_MENU);
     } else {
@@ -1428,40 +1133,6 @@ static void PlayGame(void) {
         ExecuteState();
         EndFrame();
     }
-}
-
-static void BeginFrame(void) {
-    StartFrameTimer();
-
-    ProcessMessages();
-    UpdateInput();
-
-    if(VirtButtons[BT_FULLSCREEN] == 1) {
-        ToggleFullscreen();
-    }
-}
-
-static void UpdateMusicSwitch(void) {
-    if(MusicTick > 0) {
-        MusicTick--;
-        MusicSetVolume(MusicTick / 60.0F);
-        if(MusicTick == 0) {
-            PlayMusic(World.MusicI);
-        }
-    }
-}
-
-static void EndFrame(void) {
-    UpdateMusicSwitch();
-    UpdateActiveWorld();
-
-    RenderTileMap(); 
-    RenderSprites();
-    RenderWindowMap();
-
-    UpdateFullscreen();
-    EndFrameTimer();
-    RenderWindow();
 }
 
 int WINAPI WinMain(

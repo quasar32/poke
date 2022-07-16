@@ -11,18 +11,20 @@ typedef struct save_rect {
     const rect Rect;
 } save_rect;
 
-extern int SaveSec;
-extern int StartSaveSec;
+extern save_rect g_ContinueSaveRect; 
 
-extern save_rect ContinueSaveRect; 
-extern save_rect StartSaveRect;
+extern char g_Name[8];
+extern char g_Rival[8];
 
 void ReadSaveHeader(void);
-void ReadSave(world *World);
+void ReadSave(void);
 
 BOOL WriteSaveHeader(void);
-BOOL WriteSave(const world *World);
+BOOL WriteSave(void);
 
 void PlaceSave(rect Rect);
+void ResetSaveSec(void);
+void UpdateSaveSec(void);
+void StartSaveCounter(void);
 
 #endif

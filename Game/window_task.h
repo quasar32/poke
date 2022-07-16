@@ -9,7 +9,6 @@ typedef enum task_type {
     TT_INVENTORY,
     TT_MENU,
     TT_SAVE,
-    TT_OPTIONS,
     TT_DISPLAY
 } task_type;
 

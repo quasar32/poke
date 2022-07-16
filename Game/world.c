@@ -1,13 +1,11 @@
 #include "audio.h"
-#include "read_buffer.h"
-#include "read.h"
+#include "buffer.h"
+#include "frame.h"
 #include "render.h"
 #include "scalar.h"
-#include "pallete.h"
 #include "world.h"
 
 #define OUT_OF_RANGE(Ary, I) ((size_t) (I)) >= _countof((Ary))
-
 typedef struct data_path {
     const char *Tile;
     const char *Quad;
@@ -47,15 +45,153 @@ static uint8_t g_QuadData[128][4];
 
 static BOOL g_IsWorldActive;
 
-const int8_t OverworldMusic[WORLD_HEIGHT][WORLD_WIDTH] = {
+static int g_MusicTick;
+
+static const int8_t g_OverworldMusic[WORLD_HEIGHT][WORLD_WIDTH] = {
     {MUS_INVALID},
     {MUS_ROUTE_1},
     {MUS_PALLETE_TOWN},
     {MUS_INVALID}
 };
 
+const point DirPoints[] = {
+    [DIR_UP] = {0, -1},
+    [DIR_LEFT] = {-1, 0},
+    [DIR_DOWN] = {0, 1},
+    [DIR_RIGHT] = {1, 0}
+};
+
+const point NextPoints[] = {
+    [DIR_UP] = {0, 1},
+    [DIR_LEFT] = {1, 0},
+    [DIR_DOWN] = {0, 1},
+    [DIR_RIGHT] = {1, 0}
+};
+
 BOOL g_InOverworld;
 object g_Player;
+
+int g_MapI;
+map g_Maps[2];
+
+int g_MusicI;
+
+void MoveEntity(object *Object) {
+    if(Object->IsMoving && Object->Tick % 2 == 0) {
+        point DeltaPoint = DirPoints[Object->Dir];
+        DeltaPoint = MulPoint(DeltaPoint, Object->Speed);
+        Object->Pos = AddPoints(Object->Pos, DeltaPoint);
+    }
+    Object->Tick--;
+    if(Object->Tick == 0) {
+        Object->IsMoving = 0;
+    }
+}
+
+int WillObjectCollide(const object *OtherObject, point NewPoint) {
+    int WillCollide = 0;
+    point OtherPoint = PtToQuadPt(OtherObject->Pos);
+
+    if(EqualPoints(NewPoint, OtherPoint)) {
+        WillCollide = 1;
+    } else if(OtherObject->IsMoving) {
+        point NextPoint = NextPoints[OtherObject->Dir];
+        point OtherNextPoint = AddPoints(OtherPoint, NextPoint);
+        if(EqualPoints(OtherNextPoint, NewPoint)) {
+            WillCollide = 1;
+        }
+    }
+    return WillCollide;
+}
+
+void UpdateAnimation(const object *Object, sprite *SpriteQuad, point QuadPt) {
+    uint8_t QuadX = QuadPt.X;
+    uint8_t QuadY = QuadPt.Y;
+    if(Object->Tick % 16 < 8 || Object->Speed == 0) {
+        /*SetStillAnimation*/
+        switch(Object->Dir) {
+        case DIR_UP:
+            SpriteQuad[0] = (sprite) {0, 0, 0, 0};
+            SpriteQuad[1] = (sprite) {8, 0, 0, SPR_HORZ_FLAG};
+            SpriteQuad[2] = (sprite) {0, 8, 1, 0};
+            SpriteQuad[3] = (sprite) {8, 8, 1, SPR_HORZ_FLAG};
+            break;
+        case DIR_LEFT:
+            SpriteQuad[0] = (sprite) {0, 0, 4, 0};
+            SpriteQuad[1] = (sprite) {8, 0, 5, 0};
+            SpriteQuad[2] = (sprite) {0, 8, 6, 0};
+            SpriteQuad[3] = (sprite) {8, 8, 7, 0};
+            break;
+        case DIR_DOWN:
+            SpriteQuad[0] = (sprite) {0, 0, 10, 0};
+            SpriteQuad[1] = (sprite) {8, 0, 10, SPR_HORZ_FLAG};
+            SpriteQuad[2] = (sprite) {0, 8, 11, 0};
+            SpriteQuad[3] = (sprite) {8, 8, 11, SPR_HORZ_FLAG};
+            break;
+        case DIR_RIGHT:
+            SpriteQuad[0] = (sprite) {0, 0, 5, SPR_HORZ_FLAG};
+            SpriteQuad[1] = (sprite) {8, 0, 4, SPR_HORZ_FLAG};
+            SpriteQuad[2] = (sprite) {0, 8, 7, SPR_HORZ_FLAG};
+            SpriteQuad[3] = (sprite) {8, 8, 6, SPR_HORZ_FLAG};
+            break;
+        }
+    } else {
+        /*StepAnimation*/
+        switch(Object->Dir) {
+        case DIR_UP:
+            SpriteQuad[0] = (sprite) {0, 1, 0, 0};
+            SpriteQuad[1] = (sprite) {8, 1, 0, SPR_HORZ_FLAG};
+            if(Object->IsRight) {
+                SpriteQuad[2] = (sprite) {0, 8, 2, 0};
+                SpriteQuad[3] = (sprite) {8, 8, 3, 0};
+            } else {
+                SpriteQuad[2] = (sprite) {0, 8, 3, SPR_HORZ_FLAG};
+                SpriteQuad[3] = (sprite) {8, 8, 2, SPR_HORZ_FLAG};
+            }
+            break;
+        case DIR_LEFT:
+            SpriteQuad[0] = (sprite) {0, 0, 14, 0};
+            SpriteQuad[1] = (sprite) {8, 0, 15, 0};
+            SpriteQuad[2] = (sprite) {0, 8, 8, 0};
+            SpriteQuad[3] = (sprite) {8, 8, 9, 0};
+            break;
+        case DIR_DOWN:
+            SpriteQuad[0] = (sprite) {0, 1, 10, 0};
+            SpriteQuad[1] = (sprite) {8, 1, 10, SPR_HORZ_FLAG};
+            if(Object->IsRight) {
+                SpriteQuad[2] = (sprite) {0, 8, 13, SPR_HORZ_FLAG};
+                SpriteQuad[3] = (sprite) {8, 8, 12, SPR_HORZ_FLAG};
+            } else {
+                SpriteQuad[2] = (sprite) {0, 8, 12, 0};
+                SpriteQuad[3] = (sprite) {8, 8, 13, 0};
+            }
+            break;
+        case DIR_RIGHT:
+            SpriteQuad[0] = (sprite) {0, 0, 15, SPR_HORZ_FLAG};
+            SpriteQuad[1] = (sprite) {8, 0, 14, SPR_HORZ_FLAG};
+            SpriteQuad[2] = (sprite) {0, 8, 9, SPR_HORZ_FLAG};
+            SpriteQuad[3] = (sprite) {8, 8, 8, SPR_HORZ_FLAG};
+            break;
+        }
+    }
+
+    /*SetSpriteQuad*/
+    for(int SpriteI = 0; SpriteI < 4; SpriteI++) {
+        SpriteQuad[SpriteI].X += QuadX;
+        SpriteQuad[SpriteI].Y += QuadY - 4;
+        SpriteQuad[SpriteI].Tile += Object->Tile;
+    }
+}
+
+int ObjectInUpdateBounds(point QuadPt) {
+    return QuadPt.X > -16 && QuadPt.X < 176 && QuadPt.Y > -16 && QuadPt.Y < 160;
+}
+
+point GetFacingPoint(point Pos, int Dir) {
+    point OldPoint = PtToQuadPt(Pos);
+    point DirPoint = DirPoints[Dir];
+    return AddPoints(OldPoint, DirPoint);
+}
 
 static void UpdateFlowerTiles(void) {
     memcpy(g_TileData[3], g_FlowerData[g_TickCycle % 3], 64);
@@ -119,6 +255,106 @@ static void ReadPalleteI(read_buffer *ReadBuffer, map *Map) {
     Map->PalleteI = OUT_OF_RANGE(g_Palletes, Map->PalleteI) ? 0 : Map->PalleteI; 
 }
 
+static sprite *AllocSpriteQuad(void) {
+    sprite *SpriteQuad = NULL;
+    if(g_SpriteCount <= _countof(g_Sprites) - 4) {
+        SpriteQuad = &g_Sprites[g_SpriteCount];
+        g_SpriteCount += 4;
+    }
+    return SpriteQuad;
+}
+
+static sprite *PushQuadSprite(object *Object, point Point) {
+    sprite *SpriteQuad = AllocSpriteQuad();
+    if(SpriteQuad) {
+        UpdateAnimation(Object, SpriteQuad, Point);
+    }
+    return SpriteQuad;
+}
+
+static point GetObjectSpritePos(object *Object, int MapI) {
+    point QuadPt = {
+        Object->Pos.X - g_Player.Pos.X + 72,
+        Object->Pos.Y - g_Player.Pos.Y + 72
+    };
+
+    if(g_MapI != MapI) {
+        switch(GetMapDir(g_Maps, g_MapI)) {
+        case DIR_UP:
+            QuadPt.Y -= g_Maps[MapI].Height * 16;
+            break;
+        case DIR_LEFT:
+            QuadPt.X -= g_Maps[MapI].Width * 16;
+            break;
+        case DIR_DOWN:
+            QuadPt.Y += g_Maps[g_MapI].Height * 16;
+            break;
+        case DIR_RIGHT:
+            QuadPt.X += g_Maps[g_MapI].Width * 16;
+            break;
+        }
+    }
+
+    return QuadPt;
+}
+
+static void PushNPCSprite(int MapI, object *Object) {
+    point QuadPt = GetObjectSpritePos(Object, MapI);
+    if(ObjectInUpdateBounds(QuadPt)) {
+        PushQuadSprite(Object, QuadPt);
+    }
+}
+
+static void PushShadowSprite(void) {
+    if(g_SpriteCount < _countof(g_Sprites)) {
+        sprite *ShadowQuad = &g_Sprites[g_SpriteCount]; 
+        ShadowQuad[0] = (sprite) {72, 72, 255, 0};
+        ShadowQuad[1] = (sprite) {80, 72, 255, SPR_HORZ_FLAG};
+        ShadowQuad[2] = (sprite) {72, 80, 255, SPR_VERT_FLAG};
+        ShadowQuad[3] = (sprite) {80, 80, 255, SPR_HORZ_FLAG | SPR_VERT_FLAG};
+        g_SpriteCount += 4;
+    }
+}
+
+static void SetPlayerLeapAnimation(sprite *SpriteQuad, int DeltaI) {
+    const static uint8_t Deltas[] = {0, 4, 6, 8, 9, 10, 11, 12};
+    int Delta = Deltas[DeltaI];
+    for(int I = 0; I < 4; I++) {
+        sprite *Sprite = &SpriteQuad[I];
+        Sprite->Y -= Delta;
+    }
+}
+
+static void PushPlayerSprite(uint32_t Flags) {
+    if(Flags & US_LEAPING_UP) {
+        PushShadowSprite();
+        sprite *SpriteQuad = PushBasicPlayerSprite();
+        SetPlayerLeapAnimation(SpriteQuad, 7 - g_Player.Tick / 2);
+    } else if(Flags & US_LEAPING_DOWN) {
+        PushShadowSprite();
+        sprite *SpriteQuad = PushBasicPlayerSprite();
+        SetPlayerLeapAnimation(SpriteQuad, g_Player.Tick / 2);
+    } else {
+        PushBasicPlayerSprite();
+    }
+}
+
+static void UpdateStaticNPC(object *Object) {
+    if(Object->Tick > 0) {
+        Object->Tick--; 
+    } else {
+        Object->Dir = Object->StartingDir;
+    }
+}
+
+static point GetNewStartPos(point NewPoint) {
+    point ReverseDirPoint = DirPoints[ReverseDir(g_Player.Dir)];
+    point StartPos = AddPoints(NewPoint, ReverseDirPoint); 
+    StartPos.X *= 16;
+    StartPos.Y *= 16;
+    return StartPos;
+} 
+
 int GetMapDir(const map Maps[2], int Map) {
     point DirPoint = SubPoints(Maps[!Map].Loaded, Maps[Map].Loaded);
     for(size_t I = 0; I < _countof(DirPoints); I++) {
@@ -141,13 +377,13 @@ int PointInWorld(point Pt) {
     return InX && InY;
 }
 
-void ReadMap(world *World, int MapI, const char *Path) {
+void ReadMap(int MapI, const char *Path) {
     read_buffer ReadBuffer = {
         .Size = ReadAll(Path, ReadBuffer.Data, sizeof(ReadBuffer.Data))
     };
 
     /*SaveMapPath*/
-    map *Map = &World->Maps[MapI];
+    map *Map = &g_Maps[MapI];
     Map->PathLen = strlen(Path);
     memcpy(Map->Path, Path, Map->PathLen + 1);
 
@@ -169,7 +405,7 @@ void ReadMap(world *World, int MapI, const char *Path) {
             Repeat = ReadBufferPopByte(&ReadBuffer) + 1;
         }
 
-        Repeat = MinInt(Size - QuadIndex, Repeat);
+        Repeat = MIN(Size - QuadIndex, Repeat);
 
         for(int I = QuadIndex; I < QuadIndex + Repeat; I++) {
             Map->Quads[I / Map->Width][I % Map->Width] = Quad; 
@@ -215,22 +451,22 @@ void ReadMap(world *World, int MapI, const char *Path) {
     ReadPalleteI(&ReadBuffer, Map);
 }
 
-void ReadOverworldMap(world *World, int MapI, point Load) { 
+void ReadOverworldMap(int MapI, point Load) { 
     const char *MapPath = g_OverworldMapPaths[Load.Y][Load.X]; 
     if(PointInWorld(Load) && MapPath) {
-        ReadMap(World, MapI, MapPath);
+        ReadMap(MapI, MapPath);
         g_InOverworld = 1;
 
-        map *Map = &World->Maps[MapI];
+        map *Map = &g_Maps[MapI];
         Map->Loaded = Load; 
     }
 }
 
-void GetLoadedPoint(world *World, int MapI, const char *MapPath) {
+void GetLoadedPoint(int MapI, const char *MapPath) {
     for(int Y = 0; Y < WORLD_HEIGHT; Y++) {
         for(int X = 0; X < WORLD_WIDTH; X++) {
             if(strcmp(g_OverworldMapPaths[Y][X], MapPath) == 0) {
-                World->Maps[MapI].Loaded = (point) {X, Y};
+                g_Maps[MapI].Loaded = (point) {X, Y};
                 g_InOverworld = 1;
                 return;
             } 
@@ -239,16 +475,16 @@ void GetLoadedPoint(world *World, int MapI, const char *MapPath) {
     g_InOverworld = 0;
 }
 
-quad_info GetQuadInfo(const world *World, point Point) {
-    quad_info QuadInfo = {.MapI = World->MapI, .Point = Point};
+quad_info GetQuadInfo(point Point) {
+    quad_info QuadInfo = {.MapI = g_MapI, .Point = Point};
 
-    int OldWidth = World->Maps[QuadInfo.MapI].Width;
-    int OldHeight = World->Maps[QuadInfo.MapI].Height;
+    int OldWidth = g_Maps[QuadInfo.MapI].Width;
+    int OldHeight = g_Maps[QuadInfo.MapI].Height;
 
-    int NewWidth = World->Maps[!QuadInfo.MapI].Width;
-    int NewHeight = World->Maps[!QuadInfo.MapI].Height;
+    int NewWidth = g_Maps[!QuadInfo.MapI].Width;
+    int NewHeight = g_Maps[!QuadInfo.MapI].Height;
 
-    switch(GetMapDir(World->Maps, QuadInfo.MapI)) {
+    switch(GetMapDir(g_Maps, QuadInfo.MapI)) {
     case DIR_UP:
         if(QuadInfo.Point.Y < 0) {
             QuadInfo.Point.X += (NewWidth - OldWidth) / 2;
@@ -264,14 +500,14 @@ quad_info GetQuadInfo(const world *World, point Point) {
         }
         break;
     case DIR_DOWN:
-        if(QuadInfo.Point.Y >= World->Maps[QuadInfo.MapI].Height) {
+        if(QuadInfo.Point.Y >= g_Maps[QuadInfo.MapI].Height) {
             QuadInfo.Point.X += (NewWidth - OldWidth) / 2;
             QuadInfo.Point.Y -= OldHeight; 
             QuadInfo.MapI ^= 1;
         }
         break;
     case DIR_RIGHT:
-        if(QuadInfo.Point.X >= World->Maps[QuadInfo.MapI].Width) {
+        if(QuadInfo.Point.X >= g_Maps[QuadInfo.MapI].Width) {
             QuadInfo.Point.X -= OldWidth; 
             QuadInfo.Point.Y += (NewHeight - OldHeight) / 2;
             QuadInfo.MapI ^= 1;
@@ -279,41 +515,41 @@ quad_info GetQuadInfo(const world *World, point Point) {
         break;
     }
 
-    if(PointInMap(&World->Maps[QuadInfo.MapI], QuadInfo.Point)) {
-        QuadInfo.Quad = World->Maps[QuadInfo.MapI].Quads[QuadInfo.Point.Y][QuadInfo.Point.X];
+    if(PointInMap(&g_Maps[QuadInfo.MapI], QuadInfo.Point)) {
+        QuadInfo.Quad = g_Maps[QuadInfo.MapI].Quads[QuadInfo.Point.Y][QuadInfo.Point.X];
         QuadInfo.Prop = g_QuadProps[QuadInfo.Quad];
     } else {
-        QuadInfo.Quad = World->Maps[World->MapI].DefaultQuad;
+        QuadInfo.Quad = g_Maps[g_MapI].DefaultQuad;
         QuadInfo.Prop = QUAD_PROP_SOLID;
     }
 
     return QuadInfo;
 }
 
-int LoadAdjacentMap(world *World, int DeltaX, int DeltaY) {
+int LoadAdjacentMap(int DeltaX, int DeltaY) {
     int Result = 0;
-    point CurMapPt = World->Maps[World->MapI].Loaded;
+    point CurMapPt = g_Maps[g_MapI].Loaded;
     if(DeltaX || DeltaY) {
         point NewMapPt = {CurMapPt.X + DeltaX, CurMapPt.Y + DeltaY}; 
-        point OldMapPt = World->Maps[!World->MapI].Loaded;
+        point OldMapPt = g_Maps[!g_MapI].Loaded;
         if(
             PointInWorld(NewMapPt) &&
             g_OverworldMapPaths[NewMapPt.X][NewMapPt.Y] && 
             !EqualPoints(NewMapPt, OldMapPt)
         ) {
-            ReadOverworldMap(World, !World->MapI, NewMapPt);
+            ReadOverworldMap(!g_MapI, NewMapPt);
             Result = 1;
         }
     }
     return Result;
 }
 
-void PlaceMap(const world *World, point TileMin, rect QuadRect) {
+void PlaceMap(point TileMin, rect QuadRect) {
     int TileY = CorrectTileCoord(TileMin.Y);
     for(int QuadY = QuadRect.Top; QuadY < QuadRect.Bottom; QuadY++) {
         int TileX = CorrectTileCoord(TileMin.X);
         for(int QuadX = QuadRect.Left; QuadX < QuadRect.Right; QuadX++) {
-            int Quad = GetQuadInfo(World, (point) {QuadX, QuadY}).Quad;
+            int Quad = GetQuadInfo((point) {QuadX, QuadY}).Quad;
             SetToTiles(TileX, TileY, g_QuadData[Quad]); 
             TileX = (TileX + 2) % 32;
         }
@@ -321,7 +557,7 @@ void PlaceMap(const world *World, point TileMin, rect QuadRect) {
     }
 }
 
-void PlaceViewMap(const world *World, int IsDown) {
+void PlaceViewMap(int IsDown) {
     rect QuadRect = {
         .Left = g_Player.Pos.X / 16 - 4,
         .Top = g_Player.Pos.Y / 16 - 4,
@@ -329,12 +565,12 @@ void PlaceViewMap(const world *World, int IsDown) {
         .Bottom = QuadRect.Top + 9 + !!IsDown
     };
     point TileMin = {0};
-    PlaceMap(World, TileMin, QuadRect);
+    PlaceMap(TileMin, QuadRect);
 }
 
 void SetPlayerToDefault(void) {
     g_Player = (object) {
-        .Pos = {80, 96},
+        .Pos = {48, 96},
         .Dir = DIR_DOWN,
         .Speed = 2,
         .Tile = ANIM_PLAYER
@@ -347,7 +583,6 @@ void ActivateWorld(void) {
         ReadTileData("FlowerData", g_FlowerData, 3);
         ReadTileData("WaterData", g_WaterData, 7);
         ReadTileData("ShadowData", &g_SpriteData[255], 1);
-        ReadTileData("SpriteData", g_SpriteData, 255);
     }
 }
 
@@ -403,3 +638,176 @@ void UpdateActiveWorld(void) {
         MulTickUpdate(); 
     }    
 }
+
+void SwitchMusic(void) {
+    g_MusicTick = 60;
+}
+
+void SwitchOverworldMusic(void) {
+    point Load = g_Maps[g_MapI].Loaded;
+    g_MusicI = g_OverworldMusic[Load.Y][Load.X];
+    SwitchMusic();
+}
+
+void UpdateMusicSwitch(void) {
+    if(g_MusicTick > 0) {
+        --g_MusicTick;
+        MusicSetVolume(g_MusicTick / 60.0F);
+        if(g_MusicTick == 0) {
+            PlayMusic(g_MusicI); 
+        }
+    }
+} 
+
+void TranslateQuadRectToTiles(point NewPoint) {
+    point TileMin = {0};
+    rect QuadRect = {0};
+
+    switch(g_Player.Dir) {
+    case DIR_UP:
+        TileMin.X = (g_TileMapX / 8) & 31;
+        TileMin.Y = (g_TileMapY / 8 + 30) & 31;
+
+        QuadRect = (rect) {
+            .Left = NewPoint.X - 4,
+            .Top = NewPoint.Y - 4, 
+            .Right = NewPoint.X + 6,
+            .Bottom = NewPoint.Y - 3
+        };
+        break;
+    case DIR_LEFT:
+        TileMin.X = (g_TileMapX / 8 + 30) & 31;
+        TileMin.Y = (g_TileMapY / 8) & 31;
+
+        QuadRect = (rect) {
+            .Left = NewPoint.X - 4,
+            .Top = NewPoint.Y - 4,
+            .Right = NewPoint.X - 3,
+            .Bottom = NewPoint.Y + 5
+        };
+        break;
+    case DIR_DOWN:
+        TileMin.X = (g_TileMapX / 8) & 31;
+        TileMin.Y = (g_TileMapY / 8 + 18) & 31;
+
+        QuadRect = (rect) {
+            .Left = NewPoint.X - 4,
+            .Top = NewPoint.Y + 4,
+            .Right = NewPoint.X + 6,
+            .Bottom = NewPoint.Y + 5
+        };
+        break;
+    case DIR_RIGHT:
+        TileMin.X = (g_TileMapX / 8 + 20) & 31;
+        TileMin.Y = (g_TileMapY / 8) & 31;
+
+        QuadRect = (rect) {
+            .Left = NewPoint.X + 5,
+            .Top = NewPoint.Y - 4,
+            .Right = NewPoint.X + 6,
+            .Bottom = NewPoint.Y + 5
+        };
+        break;
+    }
+    PlaceMap(TileMin, QuadRect);
+}
+
+
+void UpdateObjects(uint32_t Flags) {
+    g_SpriteCount = 0;
+    UpdatePlayerMovement();
+    PushPlayerSprite(Flags);
+    for(int MapI = 0; MapI < (int) _countof(g_Maps); MapI++) {
+        map *Map = &g_Maps[MapI];
+        for(int ObjI = 0; ObjI < Map->ObjectCount; ObjI++) {
+            object *Object = &Map->Objects[ObjI];
+            if(Object->Speed == 0) {
+                UpdateStaticNPC(Object);
+            } else if(Object->Tick > 0) {
+                MoveEntity(Object);
+            } else if(Flags & US_RANDOM_MOVE) {
+                RandomMove(Map, Object);
+            }
+            PushNPCSprite(MapI, Object);
+        }
+    }
+}
+
+void MovePlayerAsync(quad_info NewQuadInfo, int Tick) {
+    g_Player.IsMoving = TRUE;
+    g_Player.Tick = Tick;
+
+    if(g_InOverworld) {
+        g_Player.Pos = GetNewStartPos(NewQuadInfo.Point);
+        if(g_MapI != NewQuadInfo.MapI) {
+            g_MapI = NewQuadInfo.MapI;
+            SwitchOverworldMusic();
+        }
+        point AddTo = GetLoadedDeltaPoint(NewQuadInfo.Point);
+        if(AddTo.X == 0 || !LoadAdjacentMap(AddTo.X, 0)) {
+            if(AddTo.Y != 0) {
+                LoadAdjacentMap(0, AddTo.Y);
+            }
+        }
+    }
+
+    TranslateQuadRectToTiles(NewQuadInfo.Point);
+}
+
+void MovePlayerSync(uint32_t Flags) {
+    point FacingPoint = GetFacingPoint(g_Player.Pos, g_Player.Dir);
+    g_Player.IsMoving = 1;
+    g_Player.Tick = 16;
+    TranslateQuadRectToTiles(FacingPoint);
+    while(g_Player.IsMoving) {
+        UpdateObjects(Flags);
+        NextFrame();
+    }
+} 
+
+BOOL IsSolidPropForPlayer(quad_prop Prop) {
+    return (
+        g_Player.Tile == ANIM_SEAL ? 
+            Prop == QUAD_PROP_WATER : 
+            Prop == QUAD_PROP_NONE || Prop == QUAD_PROP_EXIT
+    ); 
+}
+
+void TransitionColors(void) {
+    Pause(8);
+    g_Bitmap.Colors[0] = g_Palletes[g_Maps[g_MapI].PalleteI][1]; 
+    g_Bitmap.Colors[1] = g_Palletes[g_Maps[g_MapI].PalleteI][2]; 
+    g_Bitmap.Colors[2] = g_Palletes[g_Maps[g_MapI].PalleteI][3]; 
+    Pause(8);
+    g_Bitmap.Colors[0] = g_Palletes[g_Maps[g_MapI].PalleteI][2]; 
+    g_Bitmap.Colors[1] = g_Palletes[g_Maps[g_MapI].PalleteI][3]; 
+    Pause(8);
+    g_Bitmap.Colors[0] = g_Palletes[g_Maps[g_MapI].PalleteI][3]; 
+    Pause(8);
+}
+
+point GetLoadedDeltaPoint(point NewPoint) {
+    point DeltaPoint = {};
+    map *Map = &g_Maps[g_MapI];
+    if(NewPoint.X == 4) {
+        DeltaPoint.X = -1;
+    } else if(NewPoint.X == Map->Width - 4) {
+        DeltaPoint.X = 1;
+    }
+    if(NewPoint.Y == 4) {
+        DeltaPoint.Y = -1;
+    } else if(NewPoint.Y == Map->Height - 4) {
+        DeltaPoint.Y = 1;
+    }
+    return DeltaPoint;
+}
+
+void PlayerLeap(void) {
+    MovePlayerSync(US_LEAPING_UP);
+    MovePlayerSync(US_LEAPING_DOWN);
+}
+
+sprite *PushBasicPlayerSprite(void) {
+    return PushQuadSprite(&g_Player, (point) {72, 72});
+}
+

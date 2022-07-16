@@ -1,23 +1,21 @@
-#include "window_map.h"
+#pragma once
+
+typedef enum option_names {
+    OPT_TEXT_SPEED,
+    OPT_BATTLE_ANIMATION, 
+    OPT_BATTLE_STYLE,
+    OPT_CANCEL
+} option_names;
+
+#define COUNTOF_OPTIONS 4
 
 typedef struct option {
-    int Y;
-    int Xs[3];
+    const int Y;
+    const int Xs[3];
+    const int Count;
     int I;
-    int Count;
 } option;
 
-typedef struct options_menu {
-    window_task WindowTask;
-    option E[4]; 
-    int I;
-} options_menu;
+extern option g_Options[4];
 
-void GS_OPTIONS(void);
-
-void PlaceOptionCursor(const option *Option, int Tile);
-void ChangeOptionX(option *Option, int NewOptionI);
-void PlaceOptionsMenu(options_menu *Options);
-
-extern options_menu Options;
-
+void OpenOptions(void);

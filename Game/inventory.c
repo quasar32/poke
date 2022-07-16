@@ -1,7 +1,7 @@
 #include "input.h"
 #include "inventory.h"
 #include "scalar.h"
-#include "window_map.h"
+#include "text.h"
 
 const char ItemNames[256][8] = {
     [ITEM_POTION] = "POTION"
@@ -35,20 +35,20 @@ const red_pc_select g_RedPCSelects[] = {
     [RPSI_WITHDRAW] = {
         .State = IS_WITHDRAW,
         .Inventory = &g_RedPC,
-        .Normal = "What do you want\nto withdraw?",
-        .Empty = "There is\nnothing stored."
+        .Normal = "What do you want to withdraw?",
+        .Empty = "There is nothing stored."
     }, 
     [RPSI_DEPOSIT] = {
         .State = IS_DEPOSIT,
         .Inventory = &g_Bag,
-        .Normal = "What do you want to\ndeposit?",
-        .Empty = "You have nothing\nto deposit."
+        .Normal = "What do you want to deposit?",
+        .Empty = "You have nothing to deposit."
     },
     [RPSI_TOSS] = {
         .State = IS_TOSS, 
         .Inventory = &g_RedPC,
-        .Normal = "What do you want to\ntoss away?", 
-        .Empty = "There is\nnothing stored."
+        .Normal = "What do you want to toss away?", 
+        .Empty = "There is nothing stored."
     }
 };
 
@@ -63,7 +63,7 @@ item RemoveItem(inventory *Inventory, int TossCount) {
         for(int I = Inventory->ItemSelect; I < Inventory->ItemCount; I++) {
             Inventory->Items[I] = Inventory->Items[I + 1]; 
         }
-        Inventory->ItemSelect = MinInt(Inventory->ItemSelect, Inventory->ItemCount);
+        Inventory->ItemSelect = MIN(Inventory->ItemSelect, Inventory->ItemCount);
     }
     return RetItem;
 }
@@ -82,7 +82,7 @@ void AddItem(inventory *Inventory, item Item) {
     item *ExistingItem;
     int I = 0;
     while(Item.Count > 0 && (ExistingItem = FindItem(Inventory, Item.ID, &I))) {
-        int ToAdd = MinInt(99 - ExistingItem->Count, Item.Count);
+        int ToAdd = MIN(99 - ExistingItem->Count, Item.Count);
         ExistingItem->Count += ToAdd;
         Item.Count -= ToAdd; 
     } 
@@ -99,7 +99,7 @@ void MoveItem(inventory *Dest, inventory *Src, int ItemCount) {
 
 static int PlaceItemCount(const inventory *Inventory, int ItemCount) {
     ItemCount = PosIntMod(ItemCount - 1, Inventory->Items[Inventory->ItemSelect].Count) + 1; 
-    PlaceTextF((point) {16, 10}, "*%02d", ItemCount);
+    PlaceTextF(16, 10, "*%02d", ItemCount);
     return ItemCount;
 }
 

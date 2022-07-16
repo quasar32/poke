@@ -1,13 +1,15 @@
-#include <assert.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
-#include "scalar.h"
-#include "str.h"
+#include "audio.h"
+#include "frame.h"
+#include "options.h"
 #include "input.h"
+#include "save.h"
+#include "scalar.h"
 #include "render.h"
-#include "window_map.h"
+#include "text.h"
 
 const rect BottomTextRect = {0, 12, 20, 18};
 
@@ -75,6 +77,93 @@ menu ConfirmTossMenu = {
 
 window_task *DeferedTask;
 const char *DeferedMessage;
+
+static const char *StrMovePastSpan(const char *Str, const char *Span) {
+    while(*Span != '\0') {
+        if(*Str != *Span) {
+            return NULL;
+        }
+        Str++;
+        Span++;
+    }
+    return Str;
+}
+
+static const char *GetNewRestoreText(const char **Str) {
+    const char *Restore = NULL;
+    Restore = StrMovePastSpan(*Str, "@ITEM");
+    if(Restore) {
+        *Str = ItemNames[DisplayItem.ID];
+        goto out;
+    }
+
+    Restore = StrMovePastSpan(*Str, "@RED");
+    if(Restore) {
+        *Str = g_Name;
+        goto out;
+    }
+    
+    Restore = StrMovePastSpan(*Str, "@BLUE");
+    if(Restore) {
+        *Str = g_Rival;
+        goto out;
+    }
+out:
+    if(Restore && !**Str) {
+        *Str = Restore;
+        Restore = NULL;
+    }
+    return Restore;
+}
+
+static size_t GetTokenLength(const char *Str) {
+    size_t I;
+    for(I = 0; Str[I] && !isspace(Str[I]) && Str[I] != '-'; I++); 
+    return I;
+}
+
+static void GoToNewLine(int *TileX, int *TileY) {
+    *TileX = 1;
+    *TileY += 2;
+    if(*TileY == 18) {
+        WaitOnFlash();
+        memcpy(&g_WindowMap[13][1], &g_WindowMap[14][1], 17);
+        memcpy(&g_WindowMap[15][1], &g_WindowMap[16][1], 17);
+        memset(&g_WindowMap[14][1], MT_BLANK, 17);
+        memset(&g_WindowMap[16][1], MT_BLANK, 18);
+        Pause(8);
+        memcpy(&g_WindowMap[14][1], &g_WindowMap[15][1], 17);
+        memset(&g_WindowMap[13][1], MT_BLANK, 17);
+        memset(&g_WindowMap[15][1], MT_BLANK, 17);
+        *TileY = 16;
+    }
+} 
+
+static void GoToNewSentence(int *TileX, int *TileY) {
+    *TileX = 1;
+    *TileY = 18;
+    WaitOnFlash();
+    memset(&g_WindowMap[14][1], MT_BLANK, 17);
+    memset(&g_WindowMap[16][1], MT_BLANK, 18);
+    Pause(8);
+    *TileY = 14;
+} 
+
+static BOOL GetCurText(LPCSTR *Str, LPCSTR *Restore) {
+    if(!**Str) {
+        if(!*Restore) {
+            return FALSE;
+        } 
+        if(**Restore) {
+            *Str = *Restore;
+        }
+        *Restore = NULL;
+    }
+    if(!*Restore) {
+        *Restore = GetNewRestoreText(Str);
+    }
+    return TRUE;
+}
 
 void PlaceBox(rect Rect) {
     /*HeadRow*/
@@ -216,36 +305,35 @@ int TileToChar(int Tile) {
 }
 
 
-void PlaceText(point TileMin, const char *Text) {
-    int X = TileMin.X;
-    int Y = TileMin.Y;
+void PlaceText(int X, int Y, const char *Text) {
+    int StartX = X;
     while(*Text) {
         switch(*Text) {
         case '\n':
-            X = TileMin.X;
+            X = StartX;
             Y += 2;
             Text++;
             break;
         case '\r':
-            X = TileMin.X;
+            X = StartX;
             Y += 3; 
             Text++;
             break;
         default:
             g_WindowMap[Y][X] = CharToTile(*Text);
-            Text++;
             X++;
+            Text++;
         }
     }
 }
 
-void PlaceTextF(point TileMin, const char *Format, ...) {
+void PlaceTextF(int X, int Y, const char *Format, ...) {
     char Text[256];
     va_list Args;
     va_start(Args, Format);
     vsnprintf(Text, sizeof(Text), Format, Args);
     va_end(Args);
-    PlaceText(TileMin, Text);
+    PlaceText(X, Y, Text);
 }
 
 void PlaceMenuCursor(const menu *Menu, int MenuTile) {
@@ -254,7 +342,7 @@ void PlaceMenuCursor(const menu *Menu, int MenuTile) {
 
 void PlaceMenu(const menu *Menu) {
     PlaceBox(Menu->Rect); 
-    PlaceText((point) {Menu->Rect.Left + 2, Menu->TextY}, Menu->Text); 
+    PlaceText(Menu->Rect.Left + 2, Menu->TextY, Menu->Text); 
     PlaceMenuCursor(Menu, MT_FULL_HORZ_ARROW);
 }
 
@@ -267,10 +355,10 @@ void PlaceInventory(const inventory *Inventory) {
 
         /*PlaceItem*/
         if(ItemI < Inventory->ItemCount) {
-            PlaceText((point) {6, Y}, ItemNames[Inventory->Items[ItemI].ID]);
-            PlaceTextF((point) {14, Y + 1}, "*%2d", Inventory->Items[ItemI].Count);
+            PlaceText(6, Y, ItemNames[Inventory->Items[ItemI].ID]);
+            PlaceTextF(14, Y + 1, "*%2d", Inventory->Items[ItemI].Count);
         } else if(ItemI == Inventory->ItemCount) {
-            PlaceText((point) {6, Y}, "CANCEL");
+            PlaceText(6, Y, "CANCEL");
         }
     }
     
@@ -279,7 +367,7 @@ void PlaceInventory(const inventory *Inventory) {
 }
 
 void ClearWindow(void) {
-    memset(g_WindowMap, 0, sizeof(g_WindowMap));
+    memset(g_WindowMap, MT_EMPTY, sizeof(g_WindowMap));
 }
 
 void ClearWindowRect(rect Rect) {
@@ -314,7 +402,89 @@ void MoveMenuCursorWrap(menu *Menu) {
     }
 }
 
-
 void ClearBottomWindow(void) { 
     ClearWindowRect(BottomTextRect);
 }
+
+void DisplayTextBox(const char *Str, int Delay) {
+    const char *Restore = NULL;
+    int TileX = 1;
+    int TileY = 14;
+
+    PlaceBox(BottomTextRect);
+    Pause(Delay + 1);
+    while(GetCurText(&Str, &Restore)) {
+        switch(*Str) {
+        case '\f':
+            GoToNewSentence(&TileX, &TileY);
+            Str++;
+            break;
+        case '\n':
+            GoToNewLine(&TileX, &TileY);
+            Str++;
+            break;
+        case '\0':
+            break;
+        default:
+            size_t TokLen = GetTokenLength(Str);
+            if(TokLen > 16) {
+                Str = "ERROR: TOKEN TOO LONG";
+            } else if(TileX + TokLen < 19) {
+                int Tile = CharToTile(*Str);
+                g_WindowMap[TileY][TileX] = Tile; 
+                TileX++;
+                Str++;
+            } else {
+                GoToNewLine(&TileX, &TileY);
+            }
+        }
+        if(!VirtButtons[BT_A] && !VirtButtons[BT_B]) {
+            Pause((int[]) {0, 2, 3}[g_Options[OPT_TEXT_SPEED].I]);
+        }
+        NextFrame();
+    }
+}
+
+void PlaceTextBox(const char *Str, int Delay) {
+    const char *Restore = NULL;
+    int TileX = 1;
+    int TileY = 14;
+
+    PlaceBox(BottomTextRect);
+    Pause(Delay); 
+
+    while(GetCurText(&Str, &Restore)) {
+        size_t TokLen = GetTokenLength(Str);
+        if(TokLen > 16) {
+            DisplayTextBox("ERROR: TOKEN TOO LONG", 0);
+            return;
+        } else if(TileX + TokLen < 19) {
+            int Tile = CharToTile(*Str);
+            g_WindowMap[TileY][TileX] = Tile; 
+            TileX++;
+            Str++;
+        } else if(TileY < 18) {
+            TileX = 1;
+            TileY += 2;
+        } else {
+            DisplayTextBox("ERROR: TEXT TOO LONG", 0);
+            return;
+        }
+    }
+}
+
+int FlashCursor(int Tick) {
+    g_WindowMap[16][18] = Tick / 30 % 2 ? MT_BLANK : MT_FULL_VERT_ARROW;
+    return Tick + 1;
+}
+
+void WaitOnFlash(void) {
+    int Tick = 0;
+    while(VirtButtons[BT_A] != 1 && VirtButtons[BT_B] != 1) {
+        Tick = FlashCursor(Tick);
+        NextFrame();
+    }
+    PlaySoundEffect(SFX_PRESS_AB);
+    g_WindowMap[16][18] = MT_BLANK;
+}
+
