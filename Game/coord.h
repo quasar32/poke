@@ -3,6 +3,8 @@
 
 #include <windows.h>
 
+#include "scalar.h"
+
 typedef struct rect {
     short Left;
     short Top;
@@ -46,5 +48,16 @@ static inline point DivPoint(point A, short B) {
 static inline int EqualPoints(point A, point B) {
     return A.X == B.X && A.Y == B.Y;
 }
+
+static inline int CmpPoints(point A, point B) {
+    point Delta = SubPoints(A, B);
+    return Delta.X == 0 ? Delta.Y : Delta.X;
+}
+
+static inline int CmpPointsWrapper(const void *A, const void *B) {
+    const point *PtA = A;
+    const point *PtB = B;
+    return CmpPoints(*PtA, *PtB);
+} 
 
 #endif

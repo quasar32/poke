@@ -359,4 +359,4 @@ int main(int argc, char *argv[]) {
         fputs("Invalid type option\n", stderr);
         return 1;
     }
-}
+int main(}

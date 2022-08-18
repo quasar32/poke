@@ -23,7 +23,8 @@ DWORD ReadAll(LPCSTR Path, LPVOID Bytes, DWORD ToRead);
 void ReadBufferFromFile(read_buffer *ReadBuffer, const char *Path); 
 uint8_t ReadBufferPopByte(read_buffer *ReadBuffer);
 void ReadBufferPopObject(read_buffer *ReadBuffer, void *Object, int Size);
-void ReadBufferPopString(read_buffer *ReadBuffer, char Str[256]);
+void ReadBufferPopString(read_buffer *ReadBuffer, size_t Size, char Str[static Size]);
+void ReadBufferPopCString(read_buffer *ReadBuffer, size_t Size, char Buf[static Size]);
 void ReadBufferPopSaveObject(read_buffer *ReadBuffer, object *Object);
 void ReadBufferPopSaveObjects(read_buffer *ReadBuffer, map *Map);
 void ReadBufferPopInventory(read_buffer *ReadBuffer, inventory *Inventory);
@@ -35,4 +36,5 @@ void WriteBufferPushObject(write_buffer *WriteBuffer, const void *Object, size_t
 void WriteBufferPushSaveObject(write_buffer *WriteBuffer, const object *Object);
 void WriteBufferPushSaveObjects(write_buffer *WriteBuffer, const map *Map);
 void WriteBufferPushString(write_buffer *WriteBuffer, const char *Str, int Length);
+void WriteBufferPushCString(write_buffer *WriteBuffer, const char *Buf);
 void WriteInventory(write_buffer *WriteBuffer, const inventory *Inventory);

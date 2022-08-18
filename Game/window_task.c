@@ -1,6 +1,6 @@
+#include <assert.h>
 #include <stdio.h>
 
-#include "container.h"
 #include "save.h"
 #include "options.h"
 #include "text.h"
@@ -24,17 +24,13 @@ static void ExecuteWindowTask(window_task *Task) {
             PlaceMenu(Menu); 
         }
         break;
-    case TT_SAVE:
-        {
-            save_rect *SaveRect = CONTAINER_OF(Task, save_rect, WindowTask);
-            PlaceSave(SaveRect->Rect);
-        }
-        break;
     case TT_DISPLAY:
         {
             StartDisplayItem(g_Inventory); 
         }
         break;
+    default:
+        assert(!"ExecuteWindowTask Invalid");
     } 
 }
 
@@ -60,24 +56,24 @@ void PushWindowTask(window_task *Task) {
 }
 
 
-window_task *PopWindowTask(void) {
-    list_head *Node = ListPop(&WindowTaskHead);
-    return LIST_ENTRY(Node, window_task, Node);
+void PopWindowTask(void) {
+    ListPop(&WindowTaskHead);
 }
 
-window_task *RemoveWindowTask(void) {
-    window_task *PoppedTask = PopWindowTask();
+void RemoveWindowTask(void) {
+    PopWindowTask();
     if(HasTextBox) {
         ClearWindowRect((rect) {0, 0, 20, 12});
     } else {
         ClearWindow();
     }
     ExecuteAllWindowTasks();
-    return PoppedTask;
 }
 
 void ClearWindowStack(void) {
-    while(PopWindowTask() != NULL);
+    while(!ListEmpty(&WindowTaskHead)) {
+        PopWindowTask();
+    }
     ClearWindow();
 }
 

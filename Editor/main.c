@@ -2,17 +2,18 @@
 #include <stdio.h>
 #include <stdint.h>
 
-#define QuadPropNone     0
-#define QuadPropSolid    1
-#define QuadPropEdge     2
-#define QuadPropMessage  3
-#define QuadPropWater    4
-#define QuadPropDoor     5
-#define QuadPropExit     6
-#define QuadPropTV       7
-#define QuadPropShelf    8
-#define QuadPropComputer 9
-#define CountofQuadProp 10
+#define QuadPropNone      0
+#define QuadPropSolid     1
+#define QuadPropEdge      2
+#define QuadPropMessage   3
+#define QuadPropWater     4
+#define QuadPropDoor      5
+#define QuadPropExit      6
+#define QuadPropTV        7
+#define QuadPropShelf     8
+#define QuadPropComputer  9
+#define QuadPropMap      10
+#define CountofQuadProp  11
 
 const char g_PropStr[][6] = {
     "None ",
@@ -24,7 +25,8 @@ const char g_PropStr[][6] = {
     "Exit ",
     "TV   ",
     "Shelf",
-    "Comp "
+    "Comp ",
+    "Map  "
 };
 
 #define SizeOfQuadProps 128 
@@ -254,29 +256,13 @@ typedef struct object {
 static object g_Objects[256];
 static text g_Doors[256];
 static int g_DefaultQuad;
-static int g_DataPathI;
+static int g_TileSetI;
 static uint8_t g_TileData[256 * 64];
 static uint8_t g_QuadProps[128];
 static uint8_t g_QuadData[512];
 static uint8_t g_PalleteNum = 0;
 static uint8_t g_MusicI = 0;
 static array_rect g_TileMap;
-struct {
-    const char *Tile;
-    const char *Quad;
-    const char *Prop;
-} const g_DataPaths[] = {
-    {
-        .Tile = "TileData00",
-        .Quad = "QuadData00",
-        .Prop = "QuadProps00"
-    }, 
-    {
-        .Tile = "TileData01",
-        .Quad = "QuadData01",
-        .Prop = "QuadProps01",
-    }
-};
 
 /*Rect Functions*/
 static int RectRight(rect *Rect)  {
@@ -532,9 +518,7 @@ static void TranslateQuadsToTiles(uint8_t *QuadData, array_rect *TileMap, rect *
     }
 }
 
-static void SetQuadDataArea(const char *Path) {
-    ReadQuadData(Path, g_QuadData);
-
+static void SetQuadDataArea(void) {
     uint8_t *Set = g_QuadData;
     uint8_t *TileRow = ArrayRectGet(&g_TileMap, 1, 1);
     for(int SetY = 0; SetY < 8; SetY++) {
@@ -548,16 +532,27 @@ static void SetQuadDataArea(const char *Path) {
     }
 }
 
-static void ReadDataPath(void) {
-    ReadTileData(g_DataPaths[g_DataPathI].Tile, g_TileData, 96);
-    ReadQuadProps(g_DataPaths[g_DataPathI].Prop, g_QuadProps);
-    SetQuadDataArea(g_DataPaths[g_DataPathI].Quad);
+static char g_TilePath[MAX_PATH];
+static char g_QuadPath[MAX_PATH];
+static char g_PropPath[MAX_PATH];
+
+static void ReadTileSet(int PathI) {
+    g_TileSetI = PathI;
+    snprintf(g_TilePath, _countof(g_TilePath), "Tiles/TileData%02d", PathI);
+    snprintf(g_QuadPath, _countof(g_QuadPath), "Tiles/QuadData%02d", PathI);
+    snprintf(g_PropPath, _countof(g_PropPath), "Tiles/QuadProps%02d", PathI);
+
+    ReadTileData(g_TilePath, g_TileData, 96);
+    ReadAll(g_QuadPath, g_QuadData, sizeof(g_QuadData)); 
+    ReadAll(g_PropPath, g_QuadProps, sizeof(g_QuadProps));
 }
 
 
 static BOOL ReadQuadMap(const char *Path, array_rect *QuadMap, text *Texts) {
+    char TruePath[MAX_PATH];
+    snprintf(TruePath, MAX_PATH, "Maps/%s", Path); 
     uint8_t RunData[65536];
-    uint32_t BytesRead = ReadAll(Path, RunData, sizeof(RunData));
+    uint32_t BytesRead = ReadAll(TruePath, RunData, sizeof(RunData));
 
     QuadMap->Width = RunData[0] + 1;
     QuadMap->Height = RunData[1] + 1;
@@ -688,8 +683,8 @@ static BOOL ReadQuadMap(const char *Path, array_rect *QuadMap, text *Texts) {
     }
 
     if(RunIndex < BytesRead) {
-        g_DataPathI = RunData[RunIndex++];
-        ReadDataPath();
+        ReadTileSet(RunData[RunIndex++]);
+        SetQuadDataArea();
     } else {
         EncodeSuccess = FALSE;
     }
@@ -814,6 +809,11 @@ static uint32_t WriteQuadMap(const char *Path, array_rect *QuadMap, text *Texts)
             if(RunPtr - RunData + g_Doors[I].Index >= 65531) {
                 return 0;
             } 
+            printf("%s\n", g_Doors[I].Data);
+            if(!g_Doors[I].Data[0]) {
+                continue;
+            }
+            printf("Save: %s\n", g_Doors[I].Data);
 
             *RunPtr++ = g_Doors[I].Pos.X;
             *RunPtr++ = g_Doors[I].Pos.Y;
@@ -831,7 +831,7 @@ static uint32_t WriteQuadMap(const char *Path, array_rect *QuadMap, text *Texts)
         return 0;
     }
 
-    *RunPtr++ = g_DataPathI;
+    *RunPtr++ = g_TileSetI;
 
     if(RunPtr - RunData >= 65536) {
         return 0;
@@ -1194,8 +1194,8 @@ static void UpdateQuadMapArea(quad_context *QuadContext, area_context *AreaConte
     rect QuadRect = {
         .X = AreaContext->QuadMapCam.X,
         .Y = AreaContext->QuadMapCam.Y,
-        .Width = Min(AreaContext->QuadMapArea.Rect.Width / 2, 16),
-        .Height = Min(AreaContext->QuadMapArea.Rect.Height / 2, 16)
+        .Width = Min(Min( AreaContext->QuadMapArea.Rect.Width / 2, 16), QuadContext->QuadMap->Width),
+        .Height = Min(Min(AreaContext->QuadMapArea.Rect.Height / 2, 16), QuadContext->QuadMap->Height)
     };
     TranslateQuadsToTiles(g_QuadData, &g_TileMap, &AreaContext->QuadMapArea.Rect, QuadContext->QuadMap, &QuadRect);
 }
@@ -1507,7 +1507,7 @@ static void ExtractQuadMapPath(char *Path, int PathCount) {
 }
 
 static BOOL CommandWriteQuadMap(command_context *CommandContext, const char *QuadMapPath, array_rect *QuadMap, text *Texts) {
-    BOOL Success = *QuadMapPath && WriteQuadMap(QuadMapPath, QuadMap, Texts);
+    BOOL Success = *QuadMapPath && WriteQuadMap(QuadMapPath, QuadMap, Texts); 
     if(Success) {
         CommandContext->Changed = FALSE;
     }
@@ -1564,9 +1564,13 @@ static void ProcessComandContext(command_context *CommandContext, quad_context *
             PostQuitMessage(0);
         }
     } else if(strcmp(CommandContext->Command, "d") == 0) {
-        BOOL QuadDataSuccess = WriteAllButError(g_DataPaths[g_DataPathI].Quad, g_QuadData, sizeof(g_QuadData));
-        BOOL QuadPropSuccess = WriteAllButError(g_DataPaths[g_DataPathI].Prop, g_QuadProps, sizeof(g_QuadProps));
+        BOOL QuadDataSuccess = WriteAllButError(g_QuadPath, g_QuadData, sizeof(g_QuadData));
+        BOOL QuadPropSuccess = WriteAllButError(g_PropPath, g_QuadProps, sizeof(g_QuadProps));
         Error = !QuadDataSuccess || !QuadPropSuccess;
+    } else if(strstr(CommandContext->Command, "t ")) {
+        int PathI = atoi(&CommandContext->Command[2]);
+        ReadTileSet(PathI);
+        SetQuadDataArea();
     } else {
         Error = TRUE;
     }
@@ -1582,12 +1586,13 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
         .ToRender = TRUE,
         .Bitmap = InitBitmap(67 * TileLength, 44 * TileLength, EditorPallete, 6)
     };
-    command_context CommandContext = {};
-    SetCurrentDirectory("../Shared");
-
     int TileDataCount = ReadTileData("TileData2", g_TileData, 256);
     ReadTileData("Numbers" , g_TileData + TileDataCount * TileSize, 256 - TileDataCount);
-    ReadTileData("SpriteData", SpriteData, 256);
+    command_context CommandContext = {};
+    SetCurrentDirectory("../Shared");
+    ReadTileSet(0);
+
+    ReadTileData("Tiles/TileDataSprites", SpriteData, 256);
 
     /*Area Setup*/
     area_context AreaContext = {
@@ -1658,10 +1663,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
     area *CurrentArea = &AreaContext.QuadDataArea;
     area *NextArea = &AreaContext.TileDataArea;
 
-    ReadQuadProps("QuadProps00", g_QuadProps);
-
-    /*g_QuadData SetUp*/
-    SetQuadDataArea(g_DataPaths[g_DataPathI].Quad);
+    SetQuadDataArea();
 
     /*QuadContext SetUp*/
     char QuadMapPath[32] = {};
@@ -1786,7 +1788,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                 break;
             default:
                 if(CommandContext.CommandMode) {
-                    if(Message.wParam == VK_RETURN) {
+                    if(GetAsyncKeyState(VK_RETURN)) {
                         ProcessComandContext(&CommandContext, &QuadContext, &AreaContext, RenderContext.Bitmap.Info.Colors, QuadMapPath, Texts);
                         RenderContext.ToRender = TRUE;
                     }
@@ -1879,11 +1881,6 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
                             }
                         }
                         break;
-                    case 'T':
-                        g_DataPathI ^= 1;
-                        ReadDataPath();
-                        RenderContext.ToRender = TRUE;
-                        break;
                     case 'Y':
                         g_PalleteNum = (g_PalleteNum + 1) % _countof(g_Palletes);
                         RenderContext.ToRender = TRUE;
@@ -1973,7 +1970,7 @@ int WINAPI WinMain(HINSTANCE Instance, HINSTANCE InstancePrev, LPSTR CommandLine
 
         FillQuad(&g_TileMap, ArrayRectPt(&g_TileMap, RectTopLeft(&AreaContext.DefaultArea.Rect)), &g_QuadData[g_DefaultQuad * 4]); 
         rect SrcRect = {AreaContext.DefaultArea.Rect.X - 5, AreaContext.DefaultArea.Rect.Y - 1, 8, 1}; 
-        PlaceFormattedText(&g_TileMap, &SrcRect, "Data: %2d", g_DataPathI); 
+        PlaceFormattedText(&g_TileMap, &SrcRect, "Data: %2d", g_TileSetI); 
         TranslateMessage(&Message);
         DispatchMessage(&Message);
         if(RenderContext.ToRender) {

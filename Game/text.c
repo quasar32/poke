@@ -33,7 +33,7 @@ menu ContinueMenu = {
 
 menu StartMenu = {
     .WindowTask.Type = TT_MENU,
-    .Text = "POKÈMON\nITEM\nRED\nSAVE\nOPTION\nEXIT", 
+    .Text = "POKÈMON\nITEM\n@RED\nSAVE\nOPTION\nEXIT", 
     .Rect = {10, 0, 20, 14},
     .TextY = 2,
     .EndI = 6,
@@ -306,24 +306,20 @@ int TileToChar(int Tile) {
 
 
 void PlaceText(int X, int Y, const char *Text) {
+    const char *Restore = NULL;
     int StartX = X;
-    while(*Text) {
+
+    while(GetCurText(&Text, &Restore)) {
         switch(*Text) {
         case '\n':
             X = StartX;
             Y += 2;
-            Text++;
-            break;
-        case '\r':
-            X = StartX;
-            Y += 3; 
-            Text++;
             break;
         default:
             g_WindowMap[Y][X] = CharToTile(*Text);
             X++;
-            Text++;
         }
+        Text++;
     }
 }
 
@@ -370,6 +366,10 @@ void ClearWindow(void) {
     memset(g_WindowMap, MT_EMPTY, sizeof(g_WindowMap));
 }
 
+void BlankWindow(void) {
+    memset(g_WindowMap, MT_BLANK, sizeof(g_WindowMap));
+}
+
 void ClearWindowRect(rect Rect) {
     for(int Y = Rect.Top; Y < Rect.Bottom; Y++) {
         for(int X = Rect.Left; X < Rect.Right; X++) {
@@ -400,6 +400,16 @@ void MoveMenuCursorWrap(menu *Menu) {
         Menu->SelectI = PosIntMod(Menu->SelectI + 1, Menu->EndI); 
         PlaceMenuCursor(Menu, MT_FULL_HORZ_ARROW);
     }
+}
+
+int GetMenuOptionSelected(menu *Menu, int CancelI) {
+    if(VirtButtons[BT_A] == 1) {
+        return Menu->SelectI; 
+    }
+    if(VirtButtons[BT_B] == 1) {
+        return CancelI;
+    }
+    return -1;
 }
 
 void ClearBottomWindow(void) { 

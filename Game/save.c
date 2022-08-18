@@ -20,6 +20,8 @@ char g_Rival[8];
 BOOL WriteSaveHeader(void) {
     write_buffer WriteBuffer = {0};
     WriteBufferPushObject(&WriteBuffer, &g_SaveSec, sizeof(g_SaveSec));
+    WriteBufferPushCString(&WriteBuffer, g_Name);
+    WriteBufferPushCString(&WriteBuffer, g_Rival);
     WriteBufferPushByte(&WriteBuffer, g_Options[0].I); 
     WriteBufferPushByte(&WriteBuffer, g_Options[1].I); 
     WriteBufferPushByte(&WriteBuffer, g_Options[2].I); 
@@ -34,8 +36,9 @@ BOOL WriteSave(void) {
     const map *CurMap = &g_Maps[g_MapI];
     const map *OthMap = &g_Maps[!g_MapI];
 
-    WriteBufferPushString(&WriteBuffer, CurMap->Path, CurMap->PathLen);
-    WriteBufferPushString(&WriteBuffer, OthMap->Path, OthMap->PathLen);
+    WriteBufferPushCString(&WriteBuffer, CurMap->Path);
+    WriteBufferPushCString(&WriteBuffer, OthMap->Path);
+    WriteBufferPushCString(&WriteBuffer, g_RestorePath);
 
     WriteBufferPushByte(&WriteBuffer, g_Player.Tile);
     WriteBufferPushSaveObject(&WriteBuffer, &g_Player);
@@ -50,6 +53,8 @@ void ReadSaveHeader(void) {
     read_buffer ReadBuffer; 
     ReadBufferFromFile(&ReadBuffer, "SaveHeader");
     ReadBufferPopObject(&ReadBuffer, &g_SaveSec, sizeof(g_SaveSec)); 
+    ReadBufferPopCString(&ReadBuffer, _countof(g_Name), g_Name);
+    ReadBufferPopCString(&ReadBuffer, _countof(g_Rival), g_Rival);
     g_Options[0].I = ReadBufferPopByte(&ReadBuffer) % g_Options[0].Count;
     g_Options[1].I = ReadBufferPopByte(&ReadBuffer) % g_Options[1].Count;
     g_Options[2].I = ReadBufferPopByte(&ReadBuffer) % g_Options[2].Count;
@@ -65,8 +70,9 @@ void ReadSave(void) {
     map *CurMap = &g_Maps[g_MapI];
     map *OthMap = &g_Maps[!g_MapI];
 
-    ReadBufferPopString(&ReadBuffer, CurMap->Path);
-    ReadBufferPopString(&ReadBuffer, OthMap->Path);
+    ReadBufferPopCString(&ReadBuffer, _countof(CurMap->Path), CurMap->Path);
+    ReadBufferPopCString(&ReadBuffer, _countof(OthMap->Path), OthMap->Path);
+    ReadBufferPopCString(&ReadBuffer, _countof(g_RestorePath), g_RestorePath);
 
     if(CurMap->Path[0]) {
         ReadMap(g_MapI, CurMap->Path);
@@ -95,8 +101,7 @@ void PlaceSave(rect Rect) {
     PlaceTextF(
         Rect.Left + 1, 
         Rect.Top + 2,
-        "PLAYER %s\nBADGES       %d\nPOKÈDEX    %3d\nTIME     %2d:%02d",
-        "RED",
+        "PLAYER @RED\nBADGES       %d\nPOKÈDEX    %3d\nTIME     %2d:%02d",
         0,
         0,
         SaveMin / 60,

@@ -7,6 +7,8 @@
 #include "coord.h"
 #include "render.h"
 
+#define MAX_MAP_PATH 16 
+
 #define ANIM_PLAYER 0
 #define ANIM_SEAL 128
 
@@ -16,6 +18,10 @@
 #define US_RANDOM_MOVE 1
 #define US_LEAPING_UP 2
 #define US_LEAPING_DOWN 4
+
+#define SPR_START 254 
+#define SPR_SHADOW 254
+#define SPR_MAP_BRACKET 255
 
 typedef enum quad_prop {
     QUAD_PROP_NONE,
@@ -27,9 +33,10 @@ typedef enum quad_prop {
     QUAD_PROP_EXIT,
     QUAD_PROP_TV,
     QUAD_PROP_SHELF,
-    QUAD_PROP_RED_PC
+    QUAD_PROP_RED_PC,
+    QUAD_PROP_MAP
 } quad_prop;
-#define COUNTOF_QUAD_PROP 10 
+#define COUNTOF_QUAD_PROP 11 
 
 typedef enum dir {
     DIR_UP,
@@ -54,19 +61,18 @@ typedef struct object {
 } object;
 
 typedef struct door {
-    point Pos;
+    point Pos; /*Pos should stay the first member*/
     point DstPos;
-    char Path[256];
+    char Path[MAX_MAP_PATH];
 } door;
 
 typedef struct text {
-    point Pos;
+    point Pos; /*Pos should stay the first member*/
     char Str[256];
 } text;
 
 typedef struct map {
-    char Path[256];
-    int PathLen;
+    char Path[MAX_MAP_PATH];
 
     int16_t Width;
     int16_t Height;
@@ -99,6 +105,8 @@ extern object g_Player;
 
 extern int g_MapI;
 extern map g_Maps[2];
+extern char g_RestorePath[MAX_MAP_PATH];
+
 extern int g_MusicI;
 
 static inline point PtToQuadPt(point Point) {
@@ -117,9 +125,9 @@ static inline void UpdatePallete(void) {
     SetPallete(g_Maps[g_MapI].PalleteI);
 }
 
+
 void MoveEntity(object *Object);
 int WillObjectCollide(const object *OtherObject, point NewPoint);
-void UpdateAnimation(const object *Object, sprite *SpriteQuad, point QuadPt);
 int ObjectInUpdateBounds(point QuadPt);
 point GetFacingPoint(point Pos, int Dir);
 
@@ -135,7 +143,7 @@ void ReadTileData(const char *Path, uint8_t TileData[][64], int TileCount);
 quad_info GetQuadInfo(point Point);
 int LoadAdjacentMap(int DeltaX, int DeltaY);
 int PointInMap(const map *Map, point Pt);
-void PlaceViewMap(BOOL IsDown);
+void PlaceViewMap(void);
 void PlaceMap(point TileMin, rect QuadRect);
 void SetPlayerToDefault(void);
 void ActivateWorld(void);
@@ -153,5 +161,9 @@ void MovePlayerSync(uint32_t Flags);
 void TransitionColors(void);
 void PlayerLeap(void);
 sprite *PushBasicPlayerSprite(void);
+const char *GetTextStrFromPos(map *Map, point Pos);
+void LoadDoorMap(point DoorPoint);
+
+void DisplayWorldMap(void);
 
 #endif

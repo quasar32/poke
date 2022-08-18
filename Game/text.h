@@ -60,7 +60,9 @@ typedef enum menu_tile {
     MT_TIMES = 96,
     MT_QUESTION = 97,
     MT_TRAINER = 98,
-    MT_TRANSITION = 147
+    MT_TRANSITION = 147,
+    MT_MAP = 171,
+    MT_MAP_BRACKET = 183,
 } menu_tile;
 
 typedef struct menu {
@@ -101,7 +103,9 @@ void PlaceMenuCursor(const menu *Menu, int MenuTile);
 void PlaceMenu(const menu *Menu);
 void MoveMenuCursor(menu *Menu);
 void MoveMenuCursorWrap(menu *Menu);
+int GetMenuOptionSelected(menu *Menu, int CancelI);
 
+void BlankWindow(void);
 void ClearWindow(void);
 void ClearWindowRect(rect Rect);
 void ClearBottomWindow(void);

@@ -45,7 +45,6 @@ static void PlaceOptionsMenu(void) {
     PlaceText(1, 6, "BATTLE ANIMATION\n ON       OFF"); 
     PlaceText(1, 11, "BATTLE STYLE\n SHIFT    SET");
     PlaceText(1, 16, " CANCEL");
-    g_Options->I = 0;
     PlaceOptionCursor(&g_Options[0], MT_FULL_HORZ_ARROW); 
     for(size_t I = 1; I < _countof(g_Options); I++) {
         PlaceOptionCursor(&g_Options[I], MT_EMPTY_HORZ_ARROW);

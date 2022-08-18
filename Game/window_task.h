@@ -20,8 +20,8 @@ typedef struct window_task {
 extern BOOL HasTextBox;
 
 void PushWindowTask(window_task *Task);
-window_task *PopWindowTask(void);
-window_task *RemoveWindowTask(void);
+void PopWindowTask(void);
+void RemoveWindowTask(void);
 void ClearWindowStack(void);
 void ExecuteAllWindowTasks(void);
 

@@ -22,7 +22,7 @@ DWORD ReadAll(LPCSTR Path, LPVOID Bytes, DWORD ToRead) {
         ReadFile(FileHandle, Bytes, ToRead, &BytesRead, NULL);
         CloseHandle(FileHandle);
     }
-                 
+
     return BytesRead;
 }
 
@@ -49,15 +49,33 @@ void ReadBufferPopObject(read_buffer *ReadBuffer, void *Object, int Size) {
     } 
 }
 
-void ReadBufferPopString(read_buffer *ReadBuffer, char Str[256]) {
+void ReadBufferPopString(read_buffer *ReadBuffer, size_t Size, char Str[static Size]) {
     uint8_t Length = ReadBufferPopByte(ReadBuffer); 
     int Left = ReadBuffer->Size - ReadBuffer->Index; 
+    if(Length >= Size) {
+        Length = 0;
+    }
     if(Left < Length) {
         Length = Left;
     }
     memcpy(Str, &ReadBuffer->Data[ReadBuffer->Index], Length);
     Str[Length] = '\0';
     ReadBuffer->Index += Length;
+}
+
+void ReadBufferPopCString(read_buffer *ReadBuffer, size_t Size, char Buf[static Size]) {
+    int Ch;
+    int I = 0;
+    do {
+        Ch = ReadBufferPopByte(ReadBuffer);
+        if(I >= Size) {
+            if(Size != 0) {
+                Buf[0] = '\0';
+            }
+            break;
+        }
+        Buf[I++] = Ch;
+    } while(Ch != '\0');
 }
 
 void ReadBufferPopSaveObject(read_buffer *ReadBuffer, object *Object) {
@@ -131,6 +149,12 @@ void WriteBufferPushSaveObjects(write_buffer *WriteBuffer, const map *Map) {
 void WriteBufferPushString(write_buffer *WriteBuffer, const char *Str, int Length) {
     WriteBufferPushByte(WriteBuffer, Length);
     WriteBufferPushObject(WriteBuffer, Str, Length);
+}
+
+void WriteBufferPushCString(write_buffer *WriteBuffer, const char *Buf) {
+    do {
+        WriteBufferPushByte(WriteBuffer, *Buf); 
+    } while(*Buf++);
 }
 
 void WriteInventory(write_buffer *WriteBuffer, const inventory *Inventory) {

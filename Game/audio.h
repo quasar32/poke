@@ -1,19 +1,13 @@
 #ifndef AUDIO_H
 #define AUDIO_H
 
-#include <stdint.h>
 #include <windows.h>
-
-#define COBJMACROS
-#include <xaudio2.h>
-
-#include "stb_vorbis.h"
 
 typedef enum music_path_i {
     MUS_INVALID = -1,
     MUS_TITLE = 1,
     MUS_OAK_SPEECH = 2,
-    MUS_PALLETE_TOWN = 3,
+    MUS_PALLET_TOWN = 3,
     MUS_ROUTE_1 = 9
 } music_path_i;
 
@@ -28,7 +22,8 @@ typedef enum sound_effect_i {
     SFX_TURN_ON_PC,
     SFX_TURN_OFF_PC,
     SFX_WITHDRAW_DEPOSIT,
-    SFX_SHRINK 
+    SFX_SHRINK,
+    SFX_TINK 
 } sound_effect_i;
 
 typedef enum cry_i {

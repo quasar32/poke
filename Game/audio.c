@@ -1,7 +1,10 @@
 #include "audio.h"
-#include "container.h"
+#include "scalar.h"
 #include "stb_vorbis.h"
 #include "win32.h"
+
+#define COBJMACROS
+#include <xaudio2.h>
 
 #define STREAM_VOICE_COUNT 2
 
@@ -34,7 +37,7 @@ static const WAVEFORMATEX WaveFormat = {
     .wBitsPerSample = 16
 };
 
-static const char *const MusicPaths[10] = { 
+static const char *const g_MusicPaths[10] = { 
     "",
     "Music/01_title.ogg",
     "Music/02_oakspeech.ogg",
@@ -47,7 +50,7 @@ static const char *const MusicPaths[10] = {
     "Music/09_route1.ogg"
 };
 
-static const char *const SoundEffectPaths[] = {
+static const char *const g_SoundEffectPaths[] = {
     "SoundEffects/SFX_COLLISION.ogg",
     "SoundEffects/SFX_LEDGE.ogg", 
     "SoundEffects/SFX_START_MENU.ogg", 
@@ -58,7 +61,8 @@ static const char *const SoundEffectPaths[] = {
     "SoundEffects/SFX_TURN_ON_PC.ogg",
     "SoundEffects/SFX_TURN_OFF_PC.ogg",
     "SoundEffects/SFX_WITHDRAW_DEPOSIT.ogg",
-    "SoundEffects/SFX_SHRINK.ogg"
+    "SoundEffects/SFX_SHRINK.ogg",
+    "SoundEffects/SFX_TINK.ogg"
 };
 
 typedef void WINAPI co_uninitialize(void);
@@ -222,7 +226,7 @@ static void SubmitSamples(source *Source, int SampleCount, const short *Buf) {
     IXAudio2SourceVoice_Start(Source->Voice, 0, 0);
 }
 
-static BOOL AttemptToGetNewVorbis(source *Source) {
+static BOOL AttemptToGetNewVorbis(source *Source, float Volume) {
     if(!Source->IsPushing) {
         if(Source->Vorbis) {
             stb_vorbis_close(Source->Vorbis);
@@ -232,14 +236,14 @@ static BOOL AttemptToGetNewVorbis(source *Source) {
         Source->Vorbis = PopVorbis(Source); 
         if(Source->Vorbis) { 
             Source->IsPushing = TRUE;
-            IXAudio2Voice_SetVolume(Source->Voice, 1.0F, 0);
+            IXAudio2Voice_SetVolume(Source->Voice, Volume, 0);
         }
     }
     return Source->IsPushing;
 }
 
 static BOOL SubmitMusicSamples(source *Source) {
-    BOOL Success = AttemptToGetNewVorbis(Source);
+    BOOL Success = AttemptToGetNewVorbis(Source, 1.0F);
     if(Success && !IsQueueFull(Source->Voice)) {
         BOOL HasZero = FALSE;
         int RemainingSamples = STREAM_BUFFER_SAMPLE_COUNT;
@@ -271,7 +275,7 @@ static BOOL SubmitMusicSamples(source *Source) {
 }
 
 static BOOL SubmitSoundBufferSamples(source *Source) {
-    BOOL Success = AttemptToGetNewVorbis(Source);
+    BOOL Success = AttemptToGetNewVorbis(Source, 0.5F);
     if(Success && !IsQueueFull(Source->Voice) && Source->Vorbis) { 
         short *CurBuf = Source->Bufs[Source->BufI];
         int SampleCount = stb_vorbis_get_samples_short(
@@ -482,7 +486,7 @@ BOOL PlaySoundEffect(sound_effect_i SoundEffectI) {
     BOOL Success = FALSE;
     if(g_XAudio2Success) {
         source *Source = &g_Sources[SVI_SOUND];
-        const char *Path = SoundEffectPaths[SoundEffectI];
+        const char *Path = g_SoundEffectPaths[SoundEffectI];
         Success = PushVorbisSoundEffect(Source, Path);
     }
     return Success;
@@ -493,8 +497,9 @@ BOOL PlayMusic(music_path_i MusicI) {
     if(g_XAudio2Success) {
         source *Source = &g_Sources[SVI_MUSIC];
         StopOldVorbis(Source);
-        if(MusicI != MUS_INVALID) {
-            Success = StartNewVorbis(Source, MusicPaths[MusicI]);
+        const char *Path = SAFE_INDEX(g_MusicPaths, MusicI, NULL);
+        if(Path) {
+            Success = StartNewVorbis(Source, Path);
         }
     }
     return Success;

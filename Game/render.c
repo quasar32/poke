@@ -7,28 +7,34 @@
 
 const RGBQUAD g_Palletes[][4] = {
     [PAL_DEFAULT] = {
-        {0xFF, 0xEF, 0xFF, 0x00},
-        {0xA8, 0xA8, 0xA8, 0x00},
-        {0x80, 0x80, 0x80, 0x00},
-        {0x10, 0x10, 0x18, 0x00}
+        {0xFF, 0xEF, 0xFF},
+        {0xA8, 0xA8, 0xA8},
+        {0x80, 0x80, 0x80},
+        {0x10, 0x10, 0x18}
     },
     [PAL_PALLETE] = {
-        {0xFF, 0xEF, 0xFF, 0x00},
-        {0xDE, 0xE7, 0xCE, 0x00},
-        {0xFF, 0xD6, 0xA5, 0x00},
-        {0x10, 0x10, 0x18, 0x00}
+        {0xFF, 0xEF, 0xFF},
+        {0xDE, 0xE7, 0xCE},
+        {0xFF, 0xD6, 0xA5},
+        {0x10, 0x10, 0x18}
     },
     [PAL_ROUTE_1] = {
-        {0xFF, 0xEF, 0xFF, 0x00},
-        {0x5A, 0xE7, 0xAD, 0x00},
-        {0xFF, 0xD6, 0xA5, 0x00},
-        {0x10, 0x10, 0x18, 0x00}
+        {0xFF, 0xEF, 0xFF},
+        {0x5A, 0xE7, 0xAD},
+        {0xFF, 0xD6, 0xA5},
+        {0x10, 0x10, 0x18}
     },
     [PAL_OAK] = {
-        {0xFF, 0xEF, 0xFF, 0x00},
-        {0x8C, 0xB5, 0xF7, 0x00},
-        {0x9C, 0x73, 0x84, 0x00},
-        {0x10, 0x10, 0x18, 0x00}
+        {0xFF, 0xEF, 0xFF},
+        {0x8C, 0xB5, 0xF7},
+        {0x9C, 0x73, 0x84},
+        {0x10, 0x10, 0x18}
+    },
+    [PAL_MAP] = {
+        {0xFF, 0xEF, 0xFF},
+        {0xFF, 0xD6, 0xA5},
+        {0x52, 0xBD, 0x8C},
+        {0x10, 0x10, 0x18}
     }
 };
 
@@ -85,52 +91,73 @@ static void ReadHorzFlipHalfRow(read_buffer *ReadBuffer, uint8_t *HalfRow) {
     HalfRow[3] = (CompByte >> 6) & 3;
 } 
 
-void RenderSprites(void) {
-    for(int I = 0; I < g_SpriteCount; I++) {
-        int RowsToRender = 8;
-        if(g_Sprites[I].Y < 8) {
-            RowsToRender = g_Sprites[I].Y;
-        } else if(g_Sprites[I].Y > BM_HEIGHT) {
-            RowsToRender = MAX(BM_HEIGHT + 8 - g_Sprites[I].Y, 0);
-        }
+static void RenderSprite(sprite *Sprite) { 
+    int RowsToRender = 8;
+    if(Sprite->Y < 8) {
+        RowsToRender = Sprite->Y;
+    } else if(Sprite->Y > BM_HEIGHT) {
+        RowsToRender = MAX(BM_HEIGHT + 8 - Sprite->Y, 0);
+    }
 
-        int ColsToRender = 8;
-        if(g_Sprites[I].X < 8) {
-            ColsToRender = g_Sprites[I].X;
-        } else if(g_Sprites[I].X > BM_WIDTH) {
-            ColsToRender = MAX(BM_WIDTH + 8 - g_Sprites[I].X, 0);
-        }
+    int ColsToRender = 8;
+    if(Sprite->X < 8) {
+        ColsToRender = Sprite->X;
+    } else if(Sprite->X > BM_WIDTH) {
+        ColsToRender = MAX(BM_WIDTH + 8 - Sprite->X, 0);
+    }
 
-        int DstX = MAX(g_Sprites[I].X - 8, 0);
-        int DstY = MAX(g_Sprites[I].Y - 8, 0);
+    int DstX = MAX(Sprite->X - 8, 0);
+    int DstY = MAX(Sprite->Y - 8, 0);
 
-        int SrcX = MAX(8 - g_Sprites[I].X, 0);
-        int DispX = 1;
-        if(g_Sprites[I].Flags & SPR_HORZ_FLAG) {
-            SrcX = MIN(g_Sprites[I].X, 7);
-            DispX = -1;
-        }
-        int DispY = 8;
-        int SrcY = MAX(8 - g_Sprites[I].Y, 0);
-        if(g_Sprites[I].Flags & SPR_VERT_FLAG) {
-            SrcY = MIN(g_Sprites[I].Y, 7);
-            DispY = -8;
-        }
+    int SrcX = MAX(8 - Sprite->X, 0);
+    int DispX = 1;
+    if(Sprite->Flags & SPR_HORZ_FLAG) {
+        SrcX = MIN(Sprite->X, 7);
+        DispX = -1;
+    }
+    int DispY = 8;
+    int SrcY = MAX(8 - Sprite->Y, 0);
+    if(Sprite->Flags & SPR_VERT_FLAG) {
+        SrcY = MIN(Sprite->Y, 7);
+        DispY = -8;
+    }
 
-        uint8_t *Src = &g_SpriteData[g_Sprites[I].Tile][SrcY * 8 + SrcX];
+    uint8_t *Src = &g_SpriteData[Sprite->Tile][SrcY * 8 + SrcX];
 
-        for(int Y = 0; Y < RowsToRender; Y++) {
-            uint8_t *Tile = Src;
-            for(int X = 0; X < ColsToRender; X++) {
-                if(*Tile != 2) {
-                    g_Pixels[Y + DstY][X + DstX] = *Tile;
-                }
-                Tile += DispX;
+    for(int Y = 0; Y < RowsToRender; Y++) {
+        uint8_t *Tile = Src;
+        for(int X = 0; X < ColsToRender; X++) {
+            if(*Tile != 2) {
+                g_Pixels[Y + DstY][X + DstX] = *Tile;
             }
-            Src += DispY;
+            Tile += DispX;
         }
+        Src += DispY;
     }
 }
+
+void RenderSprites(void) {
+    int N = g_SpriteCount;
+    sprite *Sprite = g_Sprites;
+
+    ARY_FOR_EACH(Sprite, N) {
+        if(!(Sprite->Flags & SPR_TOP_FLAG)) {
+            RenderSprite(Sprite);
+        } 
+    }
+}
+
+void RenderTopSprites(void) {
+    int N = g_SpriteCount;
+    sprite *Sprite = g_Sprites;
+
+    ARY_FOR_EACH(Sprite, N) {
+        if(Sprite->Flags & SPR_TOP_FLAG) {
+            RenderSprite(Sprite);
+        } 
+    }
+}
+
 
 void RenderTileMap(void) {
     uint8_t (*BmRow)[BM_WIDTH] = g_Pixels;
@@ -182,14 +209,18 @@ void RenderWindowMap(void) {
 }
 
 void ReadTileData(const char *Path, uint8_t TileData[][64], int TileCount) {
+    char TruePath[MAX_PATH];
+    snprintf(TruePath, MAX_PATH, "Tiles/TileData%s", Path);
     read_buffer ReadBuffer;
-    ReadBufferFromFile(&ReadBuffer, Path);
+    ReadBufferFromFile(&ReadBuffer, TruePath);
     InterpertTileData(&ReadBuffer, TileData, TileCount); 
 }
 
 void ReadTrainerTileData(const char *Path) {
+    char TruePath[MAX_PATH];
+    snprintf(TruePath, MAX_PATH, "Trainer/%s", Path);
     read_buffer ReadBuffer;
-    ReadBufferFromFile(&ReadBuffer, Path);
+    ReadBufferFromFile(&ReadBuffer, TruePath);
     uint8_t TrainerWH = ReadBufferPopByte(&ReadBuffer);
     g_TrainerWidth = TrainerWH & 0x0F;
     g_TrainerHeight = TrainerWH >> 4;
@@ -197,8 +228,10 @@ void ReadTrainerTileData(const char *Path) {
 }
 
 void ReadHorzFlipTrainerTileData(const char *Path) {
+    char TruePath[MAX_PATH];
+    snprintf(TruePath, MAX_PATH, "Trainer/%s", Path);
     read_buffer ReadBuffer;
-    ReadBufferFromFile(&ReadBuffer, Path);
+    ReadBufferFromFile(&ReadBuffer, TruePath);
     uint8_t TrainerWH = ReadBufferPopByte(&ReadBuffer);
     g_TrainerWidth = TrainerWH & 0x0F;
     g_TrainerHeight = TrainerWH >> 4;

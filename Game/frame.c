@@ -23,6 +23,7 @@ void EndFrame(void) {
     RenderTileMap(); 
     RenderSprites();
     RenderWindowMap();
+    RenderTopSprites();
 
     UpdateFullscreen();
     EndFrameTimer();

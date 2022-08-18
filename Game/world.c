@@ -1,11 +1,17 @@
 #include "audio.h"
 #include "buffer.h"
 #include "frame.h"
+#include "input.h"
 #include "render.h"
 #include "scalar.h"
+#include "text.h"
 #include "world.h"
 
-#define OUT_OF_RANGE(Ary, I) ((size_t) (I)) >= _countof((Ary))
+#include <stdint.h>
+
+#define COBJMACROS
+#include <xaudio2.h>
+
 typedef struct data_path {
     const char *Tile;
     const char *Quad;
@@ -14,31 +20,17 @@ typedef struct data_path {
 
 static uint8_t g_FlowerData[3][64];
 static uint8_t g_WaterData[7][64];
-    
+
 static int64_t g_Tick;
-static int64_t g_TickCycle;
 
 static const char g_OverworldMapPaths[WORLD_HEIGHT][WORLD_WIDTH][16] = {
     {"VirdianCity"},
     {"Route1"},
-    {"PalleteTown"},
+    {"PalletTown"},
     {"Route21"}
 };
 
-static const data_path *g_DataPath;
-
-static const data_path g_DataPaths[] = {
-    {
-        .Tile = "TileData00",
-        .Quad = "QuadData00",
-        .Prop = "QuadProps00"
-    }, 
-    {
-        .Tile = "TileData01",
-        .Quad = "QuadData01",
-        .Prop = "QuadProps01"
-    }
-};
+static int g_TileSetI = -1; 
 
 static uint8_t g_QuadProps[128];
 static uint8_t g_QuadData[128][4];
@@ -50,7 +42,7 @@ static int g_MusicTick;
 static const int8_t g_OverworldMusic[WORLD_HEIGHT][WORLD_WIDTH] = {
     {MUS_INVALID},
     {MUS_ROUTE_1},
-    {MUS_PALLETE_TOWN},
+    {MUS_PALLET_TOWN},
     {MUS_INVALID}
 };
 
@@ -73,6 +65,7 @@ object g_Player;
 
 int g_MapI;
 map g_Maps[2];
+char g_RestorePath[MAX_MAP_PATH];
 
 int g_MusicI;
 
@@ -104,83 +97,94 @@ int WillObjectCollide(const object *OtherObject, point NewPoint) {
     return WillCollide;
 }
 
-void UpdateAnimation(const object *Object, sprite *SpriteQuad, point QuadPt) {
+static void SetSpriteQuad(sprite *Quad, int X, int Y, int Tile) {
+    int N = 4; 
+    sprite *Sprite = Quad;
+
+    ARY_FOR_EACH(Sprite, N) {
+        Sprite->X += X;
+        Sprite->Y += Y;
+        Sprite->Tile += Tile;
+    }
+}
+
+static void SetStillAnimation(sprite *Quad, dir Dir) {
+    switch(Dir) {
+    case DIR_UP:
+        Quad[0] = (sprite) {0, 0, 0, 0};
+        Quad[1] = (sprite) {8, 0, 0, SPR_HORZ_FLAG};
+        Quad[2] = (sprite) {0, 8, 1, 0};
+        Quad[3] = (sprite) {8, 8, 1, SPR_HORZ_FLAG};
+        break;
+    case DIR_LEFT:
+        Quad[0] = (sprite) {0, 0, 4, 0};
+        Quad[1] = (sprite) {8, 0, 5, 0};
+        Quad[2] = (sprite) {0, 8, 6, 0};
+        Quad[3] = (sprite) {8, 8, 7, 0};
+        break;
+    case DIR_DOWN:
+        Quad[0] = (sprite) {0, 0, 10, 0};
+        Quad[1] = (sprite) {8, 0, 10, SPR_HORZ_FLAG};
+        Quad[2] = (sprite) {0, 8, 11, 0};
+        Quad[3] = (sprite) {8, 8, 11, SPR_HORZ_FLAG};
+        break;
+    case DIR_RIGHT:
+        Quad[0] = (sprite) {0, 0, 5, SPR_HORZ_FLAG};
+        Quad[1] = (sprite) {8, 0, 4, SPR_HORZ_FLAG};
+        Quad[2] = (sprite) {0, 8, 7, SPR_HORZ_FLAG};
+        Quad[3] = (sprite) {8, 8, 6, SPR_HORZ_FLAG};
+        break;
+    }
+}
+
+static void SetStepAnimation(sprite *Quad, dir Dir, BOOL IsRight) {
+    switch(Dir) {
+    case DIR_UP:
+        Quad[0] = (sprite) {0, 1, 0, 0};
+        Quad[1] = (sprite) {8, 1, 0, SPR_HORZ_FLAG};
+        if(IsRight) {
+            Quad[2] = (sprite) {0, 8, 2, 0};
+            Quad[3] = (sprite) {8, 8, 3, 0};
+        } else {
+            Quad[2] = (sprite) {0, 8, 3, SPR_HORZ_FLAG};
+            Quad[3] = (sprite) {8, 8, 2, SPR_HORZ_FLAG};
+        }
+        break;
+    case DIR_LEFT:
+        Quad[0] = (sprite) {0, 0, 14, 0};
+        Quad[1] = (sprite) {8, 0, 15, 0};
+        Quad[2] = (sprite) {0, 8, 8, 0};
+        Quad[3] = (sprite) {8, 8, 9, 0};
+        break;
+    case DIR_DOWN:
+        Quad[0] = (sprite) {0, 1, 10, 0};
+        Quad[1] = (sprite) {8, 1, 10, SPR_HORZ_FLAG};
+        if(IsRight) {
+            Quad[2] = (sprite) {0, 8, 13, SPR_HORZ_FLAG};
+            Quad[3] = (sprite) {8, 8, 12, SPR_HORZ_FLAG};
+        } else {
+            Quad[2] = (sprite) {0, 8, 12, 0};
+            Quad[3] = (sprite) {8, 8, 13, 0};
+        }
+        break;
+    case DIR_RIGHT:
+        Quad[0] = (sprite) {0, 0, 15, SPR_HORZ_FLAG};
+        Quad[1] = (sprite) {8, 0, 14, SPR_HORZ_FLAG};
+        Quad[2] = (sprite) {0, 8, 9, SPR_HORZ_FLAG};
+        Quad[3] = (sprite) {8, 8, 8, SPR_HORZ_FLAG};
+        break;
+    }
+}
+
+static void UpdateAnimation(const object *Object, sprite *Quad, point QuadPt) {
     uint8_t QuadX = QuadPt.X;
     uint8_t QuadY = QuadPt.Y;
     if(Object->Tick % 16 < 8 || Object->Speed == 0) {
-        /*SetStillAnimation*/
-        switch(Object->Dir) {
-        case DIR_UP:
-            SpriteQuad[0] = (sprite) {0, 0, 0, 0};
-            SpriteQuad[1] = (sprite) {8, 0, 0, SPR_HORZ_FLAG};
-            SpriteQuad[2] = (sprite) {0, 8, 1, 0};
-            SpriteQuad[3] = (sprite) {8, 8, 1, SPR_HORZ_FLAG};
-            break;
-        case DIR_LEFT:
-            SpriteQuad[0] = (sprite) {0, 0, 4, 0};
-            SpriteQuad[1] = (sprite) {8, 0, 5, 0};
-            SpriteQuad[2] = (sprite) {0, 8, 6, 0};
-            SpriteQuad[3] = (sprite) {8, 8, 7, 0};
-            break;
-        case DIR_DOWN:
-            SpriteQuad[0] = (sprite) {0, 0, 10, 0};
-            SpriteQuad[1] = (sprite) {8, 0, 10, SPR_HORZ_FLAG};
-            SpriteQuad[2] = (sprite) {0, 8, 11, 0};
-            SpriteQuad[3] = (sprite) {8, 8, 11, SPR_HORZ_FLAG};
-            break;
-        case DIR_RIGHT:
-            SpriteQuad[0] = (sprite) {0, 0, 5, SPR_HORZ_FLAG};
-            SpriteQuad[1] = (sprite) {8, 0, 4, SPR_HORZ_FLAG};
-            SpriteQuad[2] = (sprite) {0, 8, 7, SPR_HORZ_FLAG};
-            SpriteQuad[3] = (sprite) {8, 8, 6, SPR_HORZ_FLAG};
-            break;
-        }
+        SetStillAnimation(Quad, Object->Dir);
     } else {
-        /*StepAnimation*/
-        switch(Object->Dir) {
-        case DIR_UP:
-            SpriteQuad[0] = (sprite) {0, 1, 0, 0};
-            SpriteQuad[1] = (sprite) {8, 1, 0, SPR_HORZ_FLAG};
-            if(Object->IsRight) {
-                SpriteQuad[2] = (sprite) {0, 8, 2, 0};
-                SpriteQuad[3] = (sprite) {8, 8, 3, 0};
-            } else {
-                SpriteQuad[2] = (sprite) {0, 8, 3, SPR_HORZ_FLAG};
-                SpriteQuad[3] = (sprite) {8, 8, 2, SPR_HORZ_FLAG};
-            }
-            break;
-        case DIR_LEFT:
-            SpriteQuad[0] = (sprite) {0, 0, 14, 0};
-            SpriteQuad[1] = (sprite) {8, 0, 15, 0};
-            SpriteQuad[2] = (sprite) {0, 8, 8, 0};
-            SpriteQuad[3] = (sprite) {8, 8, 9, 0};
-            break;
-        case DIR_DOWN:
-            SpriteQuad[0] = (sprite) {0, 1, 10, 0};
-            SpriteQuad[1] = (sprite) {8, 1, 10, SPR_HORZ_FLAG};
-            if(Object->IsRight) {
-                SpriteQuad[2] = (sprite) {0, 8, 13, SPR_HORZ_FLAG};
-                SpriteQuad[3] = (sprite) {8, 8, 12, SPR_HORZ_FLAG};
-            } else {
-                SpriteQuad[2] = (sprite) {0, 8, 12, 0};
-                SpriteQuad[3] = (sprite) {8, 8, 13, 0};
-            }
-            break;
-        case DIR_RIGHT:
-            SpriteQuad[0] = (sprite) {0, 0, 15, SPR_HORZ_FLAG};
-            SpriteQuad[1] = (sprite) {8, 0, 14, SPR_HORZ_FLAG};
-            SpriteQuad[2] = (sprite) {0, 8, 9, SPR_HORZ_FLAG};
-            SpriteQuad[3] = (sprite) {8, 8, 8, SPR_HORZ_FLAG};
-            break;
-        }
+        SetStepAnimation(Quad, Object->Dir, Object->IsRight);
     }
-
-    /*SetSpriteQuad*/
-    for(int SpriteI = 0; SpriteI < 4; SpriteI++) {
-        SpriteQuad[SpriteI].X += QuadX;
-        SpriteQuad[SpriteI].Y += QuadY - 4;
-        SpriteQuad[SpriteI].Tile += Object->Tile;
-    }
+    SetSpriteQuad(Quad, QuadX, QuadY - 4, Object->Tile);
 }
 
 int ObjectInUpdateBounds(point QuadPt) {
@@ -193,20 +197,20 @@ point GetFacingPoint(point Pos, int Dir) {
     return AddPoints(OldPoint, DirPoint);
 }
 
-static void UpdateFlowerTiles(void) {
-    memcpy(g_TileData[3], g_FlowerData[g_TickCycle % 3], 64);
+static void UpdateFlowerTiles(int64_t TickCycle) {
+    memcpy(g_TileData[3], g_FlowerData[TickCycle % 3], 64);
 }
 
-static void UpdateWaterTiles(void) {
-    int TickMod = g_TickCycle < 5 ? g_TickCycle : 9 - g_TickCycle;
+static void UpdateWaterTiles(int64_t TickCycle) {
+    int TickMod = TickCycle < 5 ? TickCycle : 9 - TickCycle;
     memcpy(g_TileData[20], g_WaterData[TickMod], 64);
 }
 
 static void MulTickUpdate(void) {
     if(g_InOverworld && g_Tick % 32 == 0) {
-        g_TickCycle = g_Tick / 32 % 9;
-        UpdateFlowerTiles();
-        UpdateWaterTiles();
+        int64_t TickCycle = g_Tick / 32 % 9;
+        UpdateFlowerTiles(TickCycle);
+        UpdateWaterTiles(TickCycle);
     }
     g_Tick++;
 }
@@ -237,16 +241,19 @@ static BOOL WillNPCCollide(map *Map, object *Object, point NewPoint) {
 
 static void ReadTileSet(read_buffer *ReadBuffer) {
     int PathI = ReadBufferPopByte(ReadBuffer);
-    if(OUT_OF_RANGE(g_DataPaths, PathI)) {
-        return;
-    } else {
-        const data_path *NewDataPath = &g_DataPaths[PathI]; 
-        if(g_DataPath != NewDataPath) {
-            g_DataPath = NewDataPath;
-            ReadTileData(g_DataPath->Tile, g_TileData, 96);
-            ReadAll(g_DataPath->Quad, g_QuadData, sizeof(g_QuadData)); 
-            ReadAll(g_DataPath->Prop, g_QuadProps, sizeof(g_QuadProps));
-        }
+    if(g_TileSetI != PathI) {
+        char TilePath[MAX_PATH];
+        char QuadPath[MAX_PATH];
+        char PropPath[MAX_PATH];
+
+        g_TileSetI = PathI;
+        snprintf(TilePath, _countof(TilePath), "%02d", PathI);
+        snprintf(QuadPath, _countof(QuadPath), "Tiles/QuadData%02d", PathI);
+        snprintf(PropPath, _countof(PropPath), "Tiles/QuadProps%02d", PathI);
+
+        ReadTileData(TilePath, g_TileData, 96);
+        ReadAll(QuadPath, g_QuadData, sizeof(g_QuadData)); 
+        ReadAll(PropPath, g_QuadProps, sizeof(g_QuadProps));
     }
 }
 
@@ -255,7 +262,7 @@ static void ReadPalleteI(read_buffer *ReadBuffer, map *Map) {
     Map->PalleteI = OUT_OF_RANGE(g_Palletes, Map->PalleteI) ? 0 : Map->PalleteI; 
 }
 
-static sprite *AllocSpriteQuad(void) {
+sprite *AllocSpriteQuad(void) {
     sprite *SpriteQuad = NULL;
     if(g_SpriteCount <= _countof(g_Sprites) - 4) {
         SpriteQuad = &g_Sprites[g_SpriteCount];
@@ -308,10 +315,10 @@ static void PushNPCSprite(int MapI, object *Object) {
 static void PushShadowSprite(void) {
     if(g_SpriteCount < _countof(g_Sprites)) {
         sprite *ShadowQuad = &g_Sprites[g_SpriteCount]; 
-        ShadowQuad[0] = (sprite) {72, 72, 255, 0};
-        ShadowQuad[1] = (sprite) {80, 72, 255, SPR_HORZ_FLAG};
-        ShadowQuad[2] = (sprite) {72, 80, 255, SPR_VERT_FLAG};
-        ShadowQuad[3] = (sprite) {80, 80, 255, SPR_HORZ_FLAG | SPR_VERT_FLAG};
+        ShadowQuad[0] = (sprite) {72, 72, SPR_SHADOW, 0};
+        ShadowQuad[1] = (sprite) {80, 72, SPR_SHADOW, SPR_HORZ_FLAG};
+        ShadowQuad[2] = (sprite) {72, 80, SPR_SHADOW, SPR_VERT_FLAG};
+        ShadowQuad[3] = (sprite) {80, 80, SPR_SHADOW, SPR_HORZ_FLAG | SPR_VERT_FLAG};
         g_SpriteCount += 4;
     }
 }
@@ -378,14 +385,15 @@ int PointInWorld(point Pt) {
 }
 
 void ReadMap(int MapI, const char *Path) {
-    read_buffer ReadBuffer = {
-        .Size = ReadAll(Path, ReadBuffer.Data, sizeof(ReadBuffer.Data))
-    };
+    char TruePath[MAX_PATH];
+    read_buffer ReadBuffer;
+
+    snprintf(TruePath, MAX_PATH, "Maps/%s", Path);
+    ReadBufferFromFile(&ReadBuffer, TruePath);
 
     /*SaveMapPath*/
     map *Map = &g_Maps[MapI];
-    Map->PathLen = strlen(Path);
-    memcpy(Map->Path, Path, Map->PathLen + 1);
+    strcpy_s(Map->Path, MAX_MAP_PATH, Path);
 
     /*ReadQuadSize*/
     Map->Width = ReadBufferPopByte(&ReadBuffer) + 1;
@@ -394,6 +402,8 @@ void ReadMap(int MapI, const char *Path) {
 
     /*ReadQuads*/
     int QuadIndex = 0;
+    int X = 0;
+    int Y = 0;
     while(QuadIndex < Size) {
         int QuadRaw = ReadBufferPopByte(&ReadBuffer);
         int Quad = QuadRaw & 127;
@@ -408,7 +418,12 @@ void ReadMap(int MapI, const char *Path) {
         Repeat = MIN(Size - QuadIndex, Repeat);
 
         for(int I = QuadIndex; I < QuadIndex + Repeat; I++) {
-            Map->Quads[I / Map->Width][I % Map->Width] = Quad; 
+            Map->Quads[Y][X] = Quad; 
+            X++;
+            if (X >= Map->Width) {
+                X = 0;
+                Y++;
+            } 
         }
 
         QuadIndex += Repeat;
@@ -420,32 +435,37 @@ void ReadMap(int MapI, const char *Path) {
     /*ReadText*/
     Map->TextCount = ReadBufferPopByte(&ReadBuffer);
     for(int I = 0; I < Map->TextCount; I++) {
-        Map->Texts[I].Pos.X = ReadBufferPopByte(&ReadBuffer);
-        Map->Texts[I].Pos.Y = ReadBufferPopByte(&ReadBuffer);
-        ReadBufferPopString(&ReadBuffer, Map->Texts[I].Str);
+        text *Text = &Map->Texts[I];
+        Text->Pos.X = ReadBufferPopByte(&ReadBuffer);
+        Text->Pos.Y = ReadBufferPopByte(&ReadBuffer);
+        ReadBufferPopString(&ReadBuffer, _countof(Text->Str), Text->Str);
     }
+    qsort(Map->Texts, Map->TextCount, sizeof(*Map->Texts), CmpPointsWrapper); 
 
     /*ReadObjects*/
     Map->ObjectCount = ReadBufferPopByte(&ReadBuffer);
     for(int I = 0; I < Map->ObjectCount; I++) {
-        Map->Objects[I].Pos.X = ReadBufferPopByte(&ReadBuffer) * 16;
-        Map->Objects[I].Pos.Y = ReadBufferPopByte(&ReadBuffer) * 16;
-        Map->Objects[I].StartingDir = ReadBufferPopByte(&ReadBuffer) & 3;
-        Map->Objects[I].Dir = Map->Objects[I].StartingDir;  
-        Map->Objects[I].Speed = ReadBufferPopByte(&ReadBuffer) % 2;
-        Map->Objects[I].Tile = ReadBufferPopByte(&ReadBuffer) & 0xF0;
-        ReadBufferPopString(&ReadBuffer, Map->Objects[I].Str);
+        object *Object = &Map->Objects[I];
+        Object->Pos.X = ReadBufferPopByte(&ReadBuffer) * 16;
+        Object->Pos.Y = ReadBufferPopByte(&ReadBuffer) * 16;
+        Object->StartingDir = ReadBufferPopByte(&ReadBuffer) & 3;
+        Object->Dir = Object->StartingDir;  
+        Object->Speed = ReadBufferPopByte(&ReadBuffer) % 2;
+        Object->Tile = ReadBufferPopByte(&ReadBuffer) & 0xF0;
+        ReadBufferPopString(&ReadBuffer, _countof(Object->Str), Object->Str);
     }
 
     /*ReadDoors*/
     Map->DoorCount = ReadBufferPopByte(&ReadBuffer);
     for(int I = 0; I < Map->DoorCount; I++) {
-        Map->Doors[I].Pos.X = ReadBufferPopByte(&ReadBuffer);
-        Map->Doors[I].Pos.Y = ReadBufferPopByte(&ReadBuffer);
-        Map->Doors[I].DstPos.X = ReadBufferPopByte(&ReadBuffer);
-        Map->Doors[I].DstPos.Y = ReadBufferPopByte(&ReadBuffer);
-        ReadBufferPopString(&ReadBuffer, Map->Doors[I].Path);
+        door *Door = &Map->Doors[I];
+        Door->Pos.X = ReadBufferPopByte(&ReadBuffer);
+        Door->Pos.Y = ReadBufferPopByte(&ReadBuffer);
+        Door->DstPos.X = ReadBufferPopByte(&ReadBuffer);
+        Door->DstPos.Y = ReadBufferPopByte(&ReadBuffer);
+        ReadBufferPopString(&ReadBuffer, _countof(Door->Path), Door->Path);
     }
+    qsort(Map->Doors, Map->DoorCount, sizeof(*Map->Doors), CmpPointsWrapper);
 
     ReadTileSet(&ReadBuffer);
     ReadPalleteI(&ReadBuffer, Map);
@@ -557,12 +577,15 @@ void PlaceMap(point TileMin, rect QuadRect) {
     }
 }
 
-void PlaceViewMap(int IsDown) {
+void PlaceViewMap(void) {
+    g_TileMapX = 0;
+    g_TileMapY = 0;
+
     rect QuadRect = {
         .Left = g_Player.Pos.X / 16 - 4,
         .Top = g_Player.Pos.Y / 16 - 4,
         .Right = QuadRect.Left + 10,
-        .Bottom = QuadRect.Top + 9 + !!IsDown
+        .Bottom = QuadRect.Top + 9
     };
     point TileMin = {0};
     PlaceMap(TileMin, QuadRect);
@@ -580,9 +603,10 @@ void SetPlayerToDefault(void) {
 void ActivateWorld(void) {
     if(!g_IsWorldActive) {
         g_IsWorldActive = TRUE;
-        ReadTileData("FlowerData", g_FlowerData, 3);
-        ReadTileData("WaterData", g_WaterData, 7);
-        ReadTileData("ShadowData", &g_SpriteData[255], 1);
+        ReadTileData("Flower", g_FlowerData, 3);
+        ReadTileData("Water", g_WaterData, 7);
+        ReadTileData("MiscSprites", &g_SpriteData[SPR_START], 2);
+        ReadTileData("Map", &g_WindowData[MT_MAP], 13);
     }
 }
 
@@ -811,3 +835,202 @@ sprite *PushBasicPlayerSprite(void) {
     return PushQuadSprite(&g_Player, (point) {72, 72});
 }
 
+static const text *GetTextFromPos(size_t TextCount, const text *Texts, point Pos) {
+    return bsearch(&Pos, Texts, TextCount, sizeof(*Texts), CmpPointsWrapper);
+} 
+
+const char *GetTextStrFromPos(map *Map, point Pos) {
+    const text *Text = GetTextFromPos(Map->TextCount, Map->Texts, Pos);
+    return Text ? Text->Str : "ERROR: NO TEXT";
+}
+
+static const door *GetDoorFromPos(map *Map, point Pos) {
+    return bsearch(&Pos, Map->Doors, Map->DoorCount, sizeof(*Map->Doors), CmpPointsWrapper);
+} 
+
+static void ResetMap(map *Map) {
+    Map->Path[0] = '\0'; 
+    Map->Width = 0;
+    Map->Height = 0;
+    Map->TextCount = 0;
+    Map->DoorCount = 0;
+    Map->ObjectCount = 0;
+}
+
+void LoadDoorMap(point DoorPoint) {
+    quad_info QuadInfo = GetQuadInfo(DoorPoint); 
+    map *OldMap = &g_Maps[QuadInfo.MapI]; 
+    const door *Door = GetDoorFromPos(OldMap, QuadInfo.Point);
+    if(Door) {
+        /*DoorToDoor*/
+        ReadMap(!QuadInfo.MapI, Door->Path);
+        g_MapI = !QuadInfo.MapI;
+        UpdatePallete();
+        g_Player.Pos = QuadPtToPt(Door->DstPos);
+        GetLoadedPoint(!QuadInfo.MapI, Door->Path);
+        ResetMap(OldMap);
+        PlaceViewMap();
+    }
+}
+
+typedef struct world_map_entry {
+    const char *Path;
+    const char *Name;
+    point Pos;
+} world_map_entry;
+
+static const world_map_entry g_WorldMapTable[] = {
+    {"VirdianCity", "VIRDIAN CITY", {4, 9}},
+    {"Route1", "ROUTE 1", {4, 11}},
+    {"PalletTown", "PALLET TOWN", {4, 12}},
+};
+
+static const uint8_t g_MapTileMap[17][20] = {
+    { 2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  3,  3,  3,  4,  0,  0,  0,  0},
+    { 2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  2,  3,  2,  2,  2,  2,  4,  0,  0},
+    { 2,  2,  1,  2,  2,  2,  2,  3,  8,  3,  3,  3,  1,  3,  3,  3,  3,  2,  2,  0},
+    { 2,  2,  3,  2,  1,  3,  3,  3,  2,  2,  2,  2,  3,  2,  2,  2,  8,  2,  7,  0},
+    { 2,  2,  8,  2,  8,  2,  2,  2,  2,  2,  2,  2,  3,  2,  2,  2,  3,  7,  0,  0},
+    { 2,  2,  3,  2,  3,  2,  3,  3,  3,  1,  3,  3,  1,  3,  3,  3,  1,  0,  0,  0},
+    { 2,  2,  3,  2,  3,  2,  3,  2,  2,  2,  2,  2,  3,  2,  2,  2,  3,  0,  0,  0},
+    { 2,  2,  3,  2,  3,  2,  3,  7,  6,  2,  2,  2,  3,  2,  2,  2,  3,  0,  0,  0},
+    { 2,  2,  3,  3,  1,  2,  3,  0,  0,  0,  6,  2,  3,  2,  2,  2,  3,  0,  0,  0},
+    { 2,  7,  6,  2,  3,  2,  3,  2,  0,  0,  0,  2,  1,  3,  3,  3,  3,  5,  0,  0},
+    { 7,  0,  0,  2,  3,  2,  3,  7,  0,  0,  0,  6,  2,  2,  2,  2,  3,  7,  0,  0},
+    { 0,  0,  0,  2,  1,  7, 11,  0,  0,  0,  0,  0,  2,  3,  3,  3,  3,  0,  0,  0},
+    { 0,  0,  0,  6,  3,  0, 11,  0,  0,  5,  2,  2,  2,  3,  2,  2,  0,  0,  0,  0},
+    { 0,  0,  0,  0, 11,  0,  9, 10,  3,  3,  1,  3,  3,  3,  2,  7,  0,  0,  0,  0},
+    { 0,  0,  0,  5,  3,  4,  0,  0,  6,  2,  3,  7,  0,  0,  0,  0,  0,  0,  0,  0},
+    { 0,  0,  0,  2,  1,  3, 10,  8, 10, 10,  9,  0,  0,  0,  0,  0,  0,  0,  0,  0},
+    { 0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0,  0}
+};
+
+static void PlaceWorldMap(void) {
+    for(int Y = 0; Y < 17; Y++) {
+        for(int X = 0; X < 20; X++) {
+            g_WindowMap[Y + 1][X] = g_MapTileMap[Y][X] + MT_MAP; 
+        }
+    }
+}
+
+static const char *GetOverworldPath(void) {
+    return g_InOverworld ? g_Maps[g_MapI].Path : g_RestorePath;
+}
+
+static const world_map_entry *PrevWorldMapEntry(const world_map_entry *Entry) {
+    return ARY_PREV_CIRCLE(Entry, g_WorldMapTable);
+}
+
+static const world_map_entry *NextWorldMapEntry(const world_map_entry *Entry) {
+    return ARY_NEXT_CIRCLE(Entry, g_WorldMapTable);
+}
+
+static void PlaceMapName(const char *Name) { 
+    memset(g_WindowMap, MT_BLANK, 20);
+    PlaceText(1, 0, Name);
+}
+
+static void SetSpriteQuadByQuad(sprite *Quad, point Pos, int Tile) {
+    Pos = MulPoint(Pos, 8);
+    SetSpriteQuad(Quad, Pos.X, Pos.Y, Tile);
+}
+
+static void PlaceMapCursor(point Pos) {
+    sprite *Quad = AllocSpriteQuad();
+    if(Quad) {
+        Quad[0] = (sprite) { 4,  5, 0, SPR_TOP_FLAG};
+        Quad[1] = (sprite) {12,  5, 0, SPR_HORZ_FLAG | SPR_TOP_FLAG};
+        Quad[2] = (sprite) { 4, 13, 0, SPR_VERT_FLAG | SPR_TOP_FLAG};
+        Quad[3] = (sprite) {12, 13, 0, SPR_HORZ_FLAG | SPR_VERT_FLAG | SPR_TOP_FLAG};
+        SetSpriteQuadByQuad(Quad, Pos, SPR_MAP_BRACKET); 
+    }
+}
+
+static int UpdateTickCylce(int Tick, int Len) {
+    Tick++;
+    return Tick == Len ? 0 : Tick; 
+}
+
+static int FlashMapCursor(int Tick, int InitCount, point Pos) {
+    g_SpriteCount = InitCount;
+    if(Tick / 24 == 0) {
+        PlaceMapCursor(Pos);
+    }
+    return UpdateTickCylce(Tick, 48);
+}
+
+static void UpdateWorldMap(const world_map_entry *Entry) {
+    int Tick = 0;
+    int InitCount = g_SpriteCount;
+    while(VirtButtons[BT_A] != 1 && VirtButtons[BT_B] != 1) {
+        if(VirtButtons[BT_DOWN] == 1) {
+            Entry = NextWorldMapEntry(Entry);
+            PlaceMapName(Entry->Name);
+            Tick = 0;
+            PlaySoundEffect(SFX_TINK);
+        } else if(VirtButtons[BT_UP] == 1){
+            Entry = PrevWorldMapEntry(Entry);
+            PlaceMapName(Entry->Name);
+            Tick = 0;
+            PlaySoundEffect(SFX_TINK);
+        }
+        Tick = FlashMapCursor(Tick, InitCount, Entry->Pos);
+        NextFrame();
+    }
+    PlaySoundEffect(SFX_TINK);
+}
+
+static const world_map_entry *FindWorldMapEntry(void) {
+    size_t N = _countof(g_WorldMapTable);
+    const world_map_entry *Entry = g_WorldMapTable;
+    const char *OverworldPath = GetOverworldPath();
+    ARY_FOR_EACH(Entry, N) {
+        if(strcmp(Entry->Path, OverworldPath) == 0) {
+            return Entry; 
+        }
+    }
+    return NULL;
+}
+
+static void AddSpriteQuadFlags(sprite *Quad, uint8_t Flags) {
+    size_t N = 4;
+    sprite *Sprite = Quad;
+
+    ARY_FOR_EACH(Sprite, N) {
+       Sprite->Flags |= Flags; 
+    }
+}
+
+static void PlaceMapPlayer(point Pos) {
+    sprite *Quad = AllocSpriteQuad();
+    if(Quad) {
+        Pos = MulPoint(Pos, 8);
+        SetStillAnimation(Quad, DIR_DOWN);
+        SetSpriteQuad(Quad, Pos.X + 4, Pos.Y + 4, 0);
+        AddSpriteQuadFlags(Quad, SPR_TOP_FLAG);
+    }
+}
+
+void DisplayWorldMap(void) {
+    const world_map_entry *Entry;
+
+    BlankWindow();
+    Pause(30);
+    Entry = FindWorldMapEntry();
+    if(Entry) {
+        int SaveCount; 
+
+        SetPallete(PAL_MAP);
+        PlaceWorldMap();
+        SaveCount = g_SpriteCount;
+        PlaceMapName(Entry->Name);
+        PlaceMapPlayer(Entry->Pos);
+        UpdateWorldMap(Entry);
+        g_SpriteCount = SaveCount;
+        BlankWindow();
+        Pause(30);
+        UpdatePallete();
+    }
+    ClearWindow();
+    ExecuteAllWindowTasks();
+}

@@ -9,6 +9,7 @@
 
 #define SPR_HORZ_FLAG 1
 #define SPR_VERT_FLAG 2
+#define SPR_TOP_FLAG  4
 
 typedef uint8_t tile_map[32][32];
 
@@ -16,10 +17,11 @@ typedef enum pallete {
     PAL_DEFAULT,
     PAL_PALLETE,
     PAL_ROUTE_1,
-    PAL_OAK
+    PAL_OAK,
+    PAL_MAP
 } pallete;
 
-#define COUNTOF_PALLETES 4
+#define COUNTOF_PALLETES 5
 
 typedef struct sprite {
     uint8_t X;
@@ -75,6 +77,7 @@ static inline void ClearPallete(void) {
 }
 
 void RenderSprites(void);
+void RenderTopSprites(void);
 void RenderTileMap(void);
 void RenderWindowMap(void);
 

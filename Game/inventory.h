@@ -41,7 +41,8 @@ typedef struct red_pc_select {
 } red_pc_select;
 
 typedef enum item_id {
-    ITEM_POTION
+    ITEM_POTION,
+    ITEM_MAP
 } item_id;
 
 extern const char ItemNames[256][8];
@@ -55,6 +56,10 @@ extern inventory g_RedPC;
 extern inventory g_Bag;
 
 extern const red_pc_select g_RedPCSelects[];
+
+static inline item *GetSelectedItem(const inventory *Inventory) {
+    return &Inventory->Items[Inventory->ItemSelect];
+}
 
 item RemoveItem(inventory *Inventory, int TossCount);
 void AddItem(inventory *Inventory, item Item);

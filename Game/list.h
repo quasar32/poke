@@ -1,9 +1,10 @@
 #ifndef LIST_H
 #define LIST_H
 
-#include "container.h"
 #include <stdbool.h>
 #include <stdio.h>
+
+#include "scalar.h"
 
 #define LIST_HEAD_INIT(Name) {  \
     .Prev = &(Name),            \
@@ -44,7 +45,6 @@ typedef struct list_head {
     struct list_head *Next; 
 } list_head;
 
-[[maybe_unused]]
 static inline void InitListHead(list_head *ListNode) {
     ListNode->Prev = ListNode; 
     ListNode->Next = ListNode; 
@@ -58,12 +58,10 @@ static inline void __ListAdd(list_head *New, list_head *Prev, list_head *Next) {
     Prev->Next = New; 
 }
 
-[[maybe_unused]]
 static inline void ListAdd(list_head *New, list_head *Head) {
     __ListAdd(New, Head, Head->Next); 
 }
 
-[[maybe_unused]]
 static inline void ListAddTail(list_head *New, list_head *Head) {
     __ListAdd(New, Head->Prev, Head->Next);
 }
@@ -74,24 +72,20 @@ static inline void __ListDel(list_head *Prev, list_head *Next) {
     Prev->Next = Next;
 }
 
-[[maybe_unused]]
 static inline void ListDel(list_head *Entry) {
     __ListDel(Entry->Prev, Entry->Next);
     InitListHead(Entry);
 }
 
 /*Stacks*/
-[[maybe_unused]]
 static inline void ListPush(list_head *Head, list_head *New) {
     ListAdd(New, Head);
 }
 
-[[maybe_unused]]
 static inline int ListEmpty(const list_head *Head) {
     return Head->Next == Head;
 } 
 
-[[maybe_unused]]
 static inline list_head *ListPop(list_head *Head) {
     if(ListEmpty(Head)) return NULL;
     list_head *Pop = Head->Next;

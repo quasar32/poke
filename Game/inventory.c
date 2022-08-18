@@ -4,7 +4,8 @@
 #include "text.h"
 
 const char ItemNames[256][8] = {
-    [ITEM_POTION] = "POTION"
+    [ITEM_POTION] = "POTION",
+    [ITEM_MAP] = "MAP"
 };
 
 window_task DisplayWindowTask = {
@@ -21,7 +22,7 @@ inventory_state g_InventoryState;
 inventory g_RedPC = {
     .WindowTask.Type = TT_INVENTORY,
     .ItemCapacity = 50,
-    .Items = (item[50]) {{ITEM_POTION, 99}, {ITEM_POTION, 50}},
+    .Items = (item[50]) {{ITEM_MAP, 99}, {ITEM_POTION, 50}},
     .ItemCount = 2 
 };
 
@@ -53,7 +54,7 @@ const red_pc_select g_RedPCSelects[] = {
 };
 
 item RemoveItem(inventory *Inventory, int TossCount) {
-    item *SelectedItem = &Inventory->Items[Inventory->ItemSelect];
+    item *SelectedItem = GetSelectedItem(Inventory);
     item RetItem = *SelectedItem;
     if(TossCount < SelectedItem->Count) { 
         SelectedItem->Count -= TossCount;
@@ -98,7 +99,8 @@ void MoveItem(inventory *Dest, inventory *Src, int ItemCount) {
 } 
 
 static int PlaceItemCount(const inventory *Inventory, int ItemCount) {
-    ItemCount = PosIntMod(ItemCount - 1, Inventory->Items[Inventory->ItemSelect].Count) + 1; 
+    item *SelectedItem = GetSelectedItem(Inventory);
+    ItemCount = PosIntMod(ItemCount - 1, SelectedItem->Count) + 1; 
     PlaceTextF(16, 10, "*%02d", ItemCount);
     return ItemCount;
 }
