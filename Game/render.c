@@ -1,11 +1,18 @@
 #include <string.h>
+#include <stdio.h>
 
 #include "buffer.h"
 #include "render.h"
 #include "scalar.h"
 #include "text.h"
 
-const RGBQUAD g_Palletes[][4] = {
+SDL_Window *g_Window;
+SDL_Renderer *g_Renderer;
+SDL_Texture *g_Texture;
+
+SDL_Color g_Pallete[4];
+
+SDL_Color g_Palletes[][4] = {
     [PAL_DEFAULT] = {
         {0xFF, 0xEF, 0xFF},
         {0xA8, 0xA8, 0xA8},
@@ -38,17 +45,6 @@ const RGBQUAD g_Palletes[][4] = {
     }
 };
 
-bitmap g_Bitmap = {
-    .Header = {
-        .biSize = sizeof(g_Bitmap.Header),
-        .biWidth = BM_WIDTH,
-        .biHeight = -BM_HEIGHT,
-        .biPlanes = 1,
-        .biBitCount = 8,
-        .biCompression = BI_RGB,
-        .biClrUsed = 4 
-    }
-};
 uint8_t g_Pixels[BM_HEIGHT][BM_WIDTH];
 
 uint8_t g_TileMapX;
@@ -209,16 +205,16 @@ void RenderWindowMap(void) {
 }
 
 void ReadTileData(const char *Path, uint8_t TileData[][64], int TileCount) {
-    char TruePath[MAX_PATH];
-    snprintf(TruePath, MAX_PATH, "Tiles/TileData%s", Path);
+    char TruePath[256];
+    snprintf(TruePath, 256, "Tiles/TileData%s", Path);
     read_buffer ReadBuffer;
     ReadBufferFromFile(&ReadBuffer, TruePath);
     InterpertTileData(&ReadBuffer, TileData, TileCount); 
 }
 
 void ReadTrainerTileData(const char *Path) {
-    char TruePath[MAX_PATH];
-    snprintf(TruePath, MAX_PATH, "Trainer/%s", Path);
+    char TruePath[256];
+    snprintf(TruePath, 256, "Trainer/%s", Path);
     read_buffer ReadBuffer;
     ReadBufferFromFile(&ReadBuffer, TruePath);
     uint8_t TrainerWH = ReadBufferPopByte(&ReadBuffer);
@@ -228,8 +224,8 @@ void ReadTrainerTileData(const char *Path) {
 }
 
 void ReadHorzFlipTrainerTileData(const char *Path) {
-    char TruePath[MAX_PATH];
-    snprintf(TruePath, MAX_PATH, "Trainer/%s", Path);
+    char TruePath[256];
+    snprintf(TruePath, 256, "Trainer/%s", Path);
     read_buffer ReadBuffer;
     ReadBufferFromFile(&ReadBuffer, TruePath);
     uint8_t TrainerWH = ReadBufferPopByte(&ReadBuffer);

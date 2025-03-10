@@ -1,14 +1,15 @@
 #ifndef AUDIO_H
 #define AUDIO_H
 
-#include <windows.h>
+//#include <windows.h>
 
 typedef enum music_path_i {
     MUS_INVALID = -1,
     MUS_TITLE = 1,
     MUS_OAK_SPEECH = 2,
     MUS_PALLET_TOWN = 3,
-    MUS_ROUTE_1 = 9
+    MUS_ROUTE_1 = 9,
+    COUNTOF_MUS
 } music_path_i;
 
 typedef enum sound_effect_i {
@@ -23,25 +24,20 @@ typedef enum sound_effect_i {
     SFX_TURN_OFF_PC,
     SFX_WITHDRAW_DEPOSIT,
     SFX_SHRINK,
-    SFX_TINK 
+    SFX_TINK,
+    COUNTOF_SFX
 } sound_effect_i;
 
 typedef enum cry_i {
     CRY_NIDORINA = 30,
+    COUNTOF_CRY
 } cry_i; 
 
-__attribute__((constructor))
-BOOL CreateXAudio2(void);
-
-__attribute__((destructor))
-void DestroyXAudio2(void);
-
-BOOL PlayMusic(music_path_i I);
-BOOL PlaySoundEffect(sound_effect_i SoundEffectI);
-BOOL PlayCry(cry_i CryI);
-
-BOOL MusicSetVolume(float Volume);
-
-BOOL IsSoundPlaying(void);
+void InitAudio(void);
+void PlayMusic(music_path_i I);
+void PlaySoundEffect(sound_effect_i SoundEffectI);
+void PlayCry(cry_i CryI);
+void MusicSetVolume(float Volume);
+bool IsSoundPlaying(void);
 
 #endif

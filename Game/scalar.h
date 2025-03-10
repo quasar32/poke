@@ -2,9 +2,10 @@
 #define SCALAR_H 
 
 #include <stdint.h>
+#include <stddef.h>
 
-#define IN_RANGE(Ary, I) ((size_t) (I)) < _countof((Ary))
-#define OUT_OF_RANGE(Ary, I) ((size_t) (I)) >= _countof((Ary))
+#define IN_RANGE(Ary, I) ((size_t) (I)) < countof((Ary))
+#define OUT_OF_RANGE(Ary, I) ((size_t) (I)) >= countof((Ary))
 
 #define TYPEOF_MEMBER(Type, Member) __typeof(((Type *) 0)->Member)
 
@@ -37,8 +38,8 @@
 
 #define ARY_FOR_EACH(Ptr, Counter) for(; Counter > 0; Ptr++, Counter--) 
 
-#define ARY_PREV_CIRCLE(Key, Ary) PrevCircle((Key), (Ary), _countof(Ary), sizeof(*Ary))
-#define ARY_NEXT_CIRCLE(Key, Ary) NextCircle((Key), (Ary), _countof(Ary), sizeof(*Ary))
+#define ARY_PREV_CIRCLE(Key, Ary) PrevCircle((Key), (Ary), countof(Ary), sizeof(*Ary))
+#define ARY_NEXT_CIRCLE(Key, Ary) NextCircle((Key), (Ary), countof(Ary), sizeof(*Ary))
 
 static inline int AbsInt(int Val) {
     return Val < 0 ? -Val : Val; 

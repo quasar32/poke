@@ -1,8 +1,6 @@
 #ifndef WINDOW_TASK_H
 #define WINDOW_TASK_H
 
-#include <windows.h>
-
 #include "list.h"
 
 typedef enum task_type {
@@ -17,7 +15,7 @@ typedef struct window_task {
     task_type Type;
 } window_task;
 
-extern BOOL HasTextBox;
+extern bool HasTextBox;
 
 void PushWindowTask(window_task *Task);
 void PopWindowTask(void);

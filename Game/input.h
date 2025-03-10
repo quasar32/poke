@@ -1,8 +1,6 @@
 #ifndef INPUT_H
 #define INPUT_H
 
-#include <windows.h>
-
 typedef enum buttons {
     BT_UP,
     BT_LEFT,
@@ -17,9 +15,6 @@ typedef enum buttons {
 #define COUNTOF_BT 8
 
 extern int VirtButtons[COUNTOF_BT];
-
-__attribute__((constructor))
-void InitXInput(void);
 
 void UpdateInput(void);
 

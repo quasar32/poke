@@ -1,6 +1,7 @@
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <ctype.h>
 
 #include "audio.h"
 #include "frame.h"
@@ -149,10 +150,10 @@ static void GoToNewSentence(int *TileX, int *TileY) {
     *TileY = 14;
 } 
 
-static BOOL GetCurText(LPCSTR *Str, LPCSTR *Restore) {
+static bool GetCurText(const char **Str, const char **Restore) {
     if(!**Str) {
         if(!*Restore) {
-            return FALSE;
+            return false;
         } 
         if(**Restore) {
             *Str = *Restore;
@@ -162,7 +163,7 @@ static BOOL GetCurText(LPCSTR *Str, LPCSTR *Restore) {
     if(!*Restore) {
         *Restore = GetNewRestoreText(Str);
     }
-    return TRUE;
+    return true;
 }
 
 void PlaceBox(rect Rect) {

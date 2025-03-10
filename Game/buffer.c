@@ -1,29 +1,16 @@
 #include "buffer.h"
 #include "scalar.h"
+#include "misc.h"
+#include <SDL3/SDL.h>
 
-BOOL ReadObject(HANDLE FileHandle, LPVOID Object, DWORD ObjectSize) {
-    DWORD BytesRead;
-    ReadFile(FileHandle, Object, ObjectSize, &BytesRead, NULL);
-    return ObjectSize == BytesRead;
-}
-
-DWORD ReadAll(LPCSTR Path, LPVOID Bytes, DWORD ToRead) {
-    DWORD BytesRead = 0;
-    HANDLE FileHandle = CreateFile(
-        Path, 
-        GENERIC_READ, 
-        FILE_SHARE_READ, 
-        NULL, 
-        OPEN_EXISTING, 
-        0, 
-        NULL
-    );
-    if(FileHandle != INVALID_HANDLE_VALUE) { 
-        ReadFile(FileHandle, Bytes, ToRead, &BytesRead, NULL);
-        CloseHandle(FileHandle);
+int ReadAll(const char *Path, void *Bytes, int ToRead) {
+    int Size = 0;
+    SDL_IOStream *Stream = SDL_IOFromFile(Path, "rb");
+    if(Stream) {
+        Size = SDL_ReadIO(Stream, Bytes, ToRead);
+        SDL_CloseIO(Stream);
     }
-
-    return BytesRead;
+    return Size;
 }
 
 void ReadBufferFromFile(read_buffer *ReadBuffer, const char *Path) {
@@ -98,37 +85,19 @@ void ReadBufferPopInventory(read_buffer *ReadBuffer, inventory *Inventory) {
     }
 }
 
-BOOL WriteAll(LPCSTR Path, LPCVOID Data, DWORD Size) {
-    BOOL Success = FALSE;
-    HANDLE FileHandle = CreateFile(
-        Path,
-        GENERIC_WRITE,
-        FILE_SHARE_READ,
-        NULL,
-        CREATE_ALWAYS,
-        FILE_ATTRIBUTE_NORMAL,
-        NULL
-    ); 
-    if(FileHandle != INVALID_HANDLE_VALUE) {
-        DWORD BytesWritten;
-        WriteFile(FileHandle, Data, Size, &BytesWritten, NULL);
-        if(BytesWritten == Size) {
-            Success = TRUE;
-        }
-        CloseHandle(FileHandle);
-    }
-    return Success;
+bool WriteAll(const char *Path, void *Data, int Size) {
+    return SDL_SaveFile(Path, Data, Size);
 }
 
 void WriteBufferPushByte(write_buffer *WriteBuffer, int Byte) {
-    if(WriteBuffer->Index < (int) _countof(WriteBuffer->Data)) {
+    if(WriteBuffer->Index < (int) countof(WriteBuffer->Data)) {
         WriteBuffer->Data[WriteBuffer->Index] = Byte;
         WriteBuffer->Index++;
     } 
 }
 
 void WriteBufferPushObject(write_buffer *WriteBuffer, const void *Object, size_t Size) {
-    if(WriteBuffer->Index + Size <= _countof(WriteBuffer->Data)) {
+    if(WriteBuffer->Index + Size <= countof(WriteBuffer->Data)) {
         memcpy(&WriteBuffer->Data[WriteBuffer->Index], Object, Size);
         WriteBuffer->Index += Size;
     }

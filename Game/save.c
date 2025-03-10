@@ -2,12 +2,14 @@
 #include "save.h"
 #include "scalar.h"
 #include "text.h"
-#include "timer.h"
 #include "buffer.h"
+#include "misc.h"
+
+#include <limits.h>
 
 static int g_SaveSec;
 static int g_StartSaveSec;
-static int64_t g_StartCounter;
+static Uint64 g_StartCounter;
 
 save_rect g_ContinueSaveRect = {
     .WindowTask.Type = TT_SAVE, 
@@ -17,7 +19,7 @@ save_rect g_ContinueSaveRect = {
 char g_Name[8];
 char g_Rival[8];
 
-BOOL WriteSaveHeader(void) {
+bool WriteSaveHeader(void) {
     write_buffer WriteBuffer = {0};
     WriteBufferPushObject(&WriteBuffer, &g_SaveSec, sizeof(g_SaveSec));
     WriteBufferPushCString(&WriteBuffer, g_Name);
@@ -28,7 +30,7 @@ BOOL WriteSaveHeader(void) {
     return WriteAll("SaveHeader", WriteBuffer.Data, WriteBuffer.Index);
 }
 
-BOOL WriteSave(void) {
+bool WriteSave(void) {
     write_buffer WriteBuffer = {0};
     WriteInventory(&WriteBuffer, &g_Bag);
     WriteInventory(&WriteBuffer, &g_RedPC);
@@ -53,8 +55,8 @@ void ReadSaveHeader(void) {
     read_buffer ReadBuffer; 
     ReadBufferFromFile(&ReadBuffer, "SaveHeader");
     ReadBufferPopObject(&ReadBuffer, &g_SaveSec, sizeof(g_SaveSec)); 
-    ReadBufferPopCString(&ReadBuffer, _countof(g_Name), g_Name);
-    ReadBufferPopCString(&ReadBuffer, _countof(g_Rival), g_Rival);
+    ReadBufferPopCString(&ReadBuffer, countof(g_Name), g_Name);
+    ReadBufferPopCString(&ReadBuffer, countof(g_Rival), g_Rival);
     g_Options[0].I = ReadBufferPopByte(&ReadBuffer) % g_Options[0].Count;
     g_Options[1].I = ReadBufferPopByte(&ReadBuffer) % g_Options[1].Count;
     g_Options[2].I = ReadBufferPopByte(&ReadBuffer) % g_Options[2].Count;
@@ -70,9 +72,9 @@ void ReadSave(void) {
     map *CurMap = &g_Maps[g_MapI];
     map *OthMap = &g_Maps[!g_MapI];
 
-    ReadBufferPopCString(&ReadBuffer, _countof(CurMap->Path), CurMap->Path);
-    ReadBufferPopCString(&ReadBuffer, _countof(OthMap->Path), OthMap->Path);
-    ReadBufferPopCString(&ReadBuffer, _countof(g_RestorePath), g_RestorePath);
+    ReadBufferPopCString(&ReadBuffer, countof(CurMap->Path), CurMap->Path);
+    ReadBufferPopCString(&ReadBuffer, countof(OthMap->Path), OthMap->Path);
+    ReadBufferPopCString(&ReadBuffer, countof(g_RestorePath), g_RestorePath);
 
     if(CurMap->Path[0]) {
         ReadMap(g_MapI, CurMap->Path);
@@ -109,6 +111,10 @@ void PlaceSave(rect Rect) {
     );
 }
 
+static Uint64 GetSecondsElapsed(Uint64 Counter) {
+    return (Counter - SDL_GetPerformanceCounter()) / SDL_GetPerformanceFrequency();
+}
+
 void UpdateSaveSec(void) {
     int64_t Elapsed = GetSecondsElapsed(g_StartCounter); 
     g_SaveSec = (int) MIN(INT_MAX, g_StartSaveSec + Elapsed);
@@ -119,7 +125,5 @@ void ResetSaveSec(void) {
 }
 
 void StartSaveCounter(void) {
-    g_StartCounter = QueryPerfCounter();
+    g_StartCounter = SDL_GetPerformanceCounter();
 }
-
-

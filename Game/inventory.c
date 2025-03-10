@@ -115,6 +115,6 @@ void UpdateDisplayItem(const inventory *Inventory) {
         DisplayItem.Count = PlaceItemCount(Inventory, DisplayItem.Count + 1); 
     } else if(VirtButtons[BT_DOWN] == 1) {
         DisplayItem.Count = PlaceItemCount(Inventory, DisplayItem.Count - 1); 
-    } 
+    }
 } 
 

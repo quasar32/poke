@@ -1,5 +1,3 @@
-#include <windows.h>
-
 #include "audio.h"
 #include "frame.h"
 #include "input.h"
@@ -7,6 +5,7 @@
 #include "render.h"
 #include "scalar.h"
 #include "text.h"
+#include "misc.h"
 
 option g_Options[4] = {
     [OPT_TEXT_SPEED] = {
@@ -46,13 +45,13 @@ static void PlaceOptionsMenu(void) {
     PlaceText(1, 11, "BATTLE STYLE\n SHIFT    SET");
     PlaceText(1, 16, " CANCEL");
     PlaceOptionCursor(&g_Options[0], MT_FULL_HORZ_ARROW); 
-    for(size_t I = 1; I < _countof(g_Options); I++) {
+    for(size_t I = 1; I < countof(g_Options); I++) {
         PlaceOptionCursor(&g_Options[I], MT_EMPTY_HORZ_ARROW);
     }
 }
 
-static BOOL HasClosed(int I) {
-    BOOL Request = (
+static bool HasClosed(int I) {
+    bool Request = (
         VirtButtons[BT_START] == 1 || 
         VirtButtons[BT_B] == 1 ||
         (VirtButtons[BT_A] == 1 && I == OPT_CANCEL)
@@ -71,7 +70,7 @@ static void ChangeOptionX(option *Option, int NewOptionI) {
 
 static void ChangeOptionY(int *I, int NewI) {
     PlaceOptionCursor(&g_Options[*I], MT_EMPTY_HORZ_ARROW);
-    *I = PosIntMod(NewI, _countof(g_Options)); 
+    *I = PosIntMod(NewI, countof(g_Options)); 
     PlaceOptionCursor(&g_Options[*I], MT_FULL_HORZ_ARROW);
 }
 

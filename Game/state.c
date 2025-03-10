@@ -1,9 +1,8 @@
 #include <assert.h>
 #include <stdlib.h>
 #include <stdio.h>
-#include <windows.h>
-#include <dbghelp.h>
 
+#include "misc.h"
 #include "state.h"
 
 static int GameStateCount;
@@ -15,7 +14,7 @@ void PopState(void) {
 }
 
 void PushState(game_state *NewState) {
-    assert(GameStateCount < _countof(GameStates));
+    assert(GameStateCount < countof(GameStates));
     GameStates[GameStateCount++] = NewState; 
 }
 

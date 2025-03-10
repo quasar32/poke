@@ -1,2 +1,2 @@
 output:
-	gcc main.c -mwindows
+	gcc main.c -mwindows 

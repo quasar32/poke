@@ -6,11 +6,8 @@
 #include "scalar.h"
 #include "text.h"
 #include "world.h"
-
-#include <stdint.h>
-
-#define COBJMACROS
-#include <xaudio2.h>
+#include "misc.h"
+#include <stdio.h>
 
 typedef struct data_path {
     const char *Tile;
@@ -35,7 +32,7 @@ static int g_TileSetI = -1;
 static uint8_t g_QuadProps[128];
 static uint8_t g_QuadData[128][4];
 
-static BOOL g_IsWorldActive;
+static bool g_IsWorldActive;
 
 static int g_MusicTick;
 
@@ -60,7 +57,7 @@ const point NextPoints[] = {
     [DIR_RIGHT] = {1, 0}
 };
 
-BOOL g_InOverworld;
+bool g_InOverworld;
 object g_Player;
 
 int g_MapI;
@@ -137,7 +134,7 @@ static void SetStillAnimation(sprite *Quad, dir Dir) {
     }
 }
 
-static void SetStepAnimation(sprite *Quad, dir Dir, BOOL IsRight) {
+static void SetStepAnimation(sprite *Quad, dir Dir, bool IsRight) {
     switch(Dir) {
     case DIR_UP:
         Quad[0] = (sprite) {0, 1, 0, 0};
@@ -226,30 +223,30 @@ static void SetToTiles(int TileX, int TileY, const uint8_t Set[4]) {
     g_TileMap[TileY + 1][TileX + 1] = Set[3];
 }
 
-static BOOL WillNPCCollide(map *Map, object *Object, point NewPoint) {
+static bool WillNPCCollide(map *Map, object *Object, point NewPoint) {
     if(WillObjectCollide(&g_Player, NewPoint)) {
-        return TRUE;
+        return true;
     }
     for(int I = 0; I < Map->ObjectCount; I++) {
         const object *OtherObject = &Map->Objects[I]; 
         if(Object != OtherObject && WillObjectCollide(OtherObject, NewPoint)) { 
-            return TRUE;
+            return true;
         }
     } 
-    return FALSE;
+    return false;
 }
 
 static void ReadTileSet(read_buffer *ReadBuffer) {
     int PathI = ReadBufferPopByte(ReadBuffer);
     if(g_TileSetI != PathI) {
-        char TilePath[MAX_PATH];
-        char QuadPath[MAX_PATH];
-        char PropPath[MAX_PATH];
+        char TilePath[256];
+        char QuadPath[256];
+        char PropPath[256];
 
         g_TileSetI = PathI;
-        snprintf(TilePath, _countof(TilePath), "%02d", PathI);
-        snprintf(QuadPath, _countof(QuadPath), "Tiles/QuadData%02d", PathI);
-        snprintf(PropPath, _countof(PropPath), "Tiles/QuadProps%02d", PathI);
+        snprintf(TilePath, countof(TilePath), "%02d", PathI);
+        snprintf(QuadPath, countof(QuadPath), "Tiles/QuadData%02d", PathI);
+        snprintf(PropPath, countof(PropPath), "Tiles/QuadProps%02d", PathI);
 
         ReadTileData(TilePath, g_TileData, 96);
         ReadAll(QuadPath, g_QuadData, sizeof(g_QuadData)); 
@@ -264,7 +261,7 @@ static void ReadPalleteI(read_buffer *ReadBuffer, map *Map) {
 
 sprite *AllocSpriteQuad(void) {
     sprite *SpriteQuad = NULL;
-    if(g_SpriteCount <= _countof(g_Sprites) - 4) {
+    if(g_SpriteCount <= countof(g_Sprites) - 4) {
         SpriteQuad = &g_Sprites[g_SpriteCount];
         g_SpriteCount += 4;
     }
@@ -313,7 +310,7 @@ static void PushNPCSprite(int MapI, object *Object) {
 }
 
 static void PushShadowSprite(void) {
-    if(g_SpriteCount < _countof(g_Sprites)) {
+    if(g_SpriteCount < countof(g_Sprites)) {
         sprite *ShadowQuad = &g_Sprites[g_SpriteCount]; 
         ShadowQuad[0] = (sprite) {72, 72, SPR_SHADOW, 0};
         ShadowQuad[1] = (sprite) {80, 72, SPR_SHADOW, SPR_HORZ_FLAG};
@@ -364,7 +361,7 @@ static point GetNewStartPos(point NewPoint) {
 
 int GetMapDir(const map Maps[2], int Map) {
     point DirPoint = SubPoints(Maps[!Map].Loaded, Maps[Map].Loaded);
-    for(size_t I = 0; I < _countof(DirPoints); I++) {
+    for(size_t I = 0; I < countof(DirPoints); I++) {
         if(EqualPoints(DirPoint, DirPoints[I])) {
             return I;
         }
@@ -385,15 +382,15 @@ int PointInWorld(point Pt) {
 }
 
 void ReadMap(int MapI, const char *Path) {
-    char TruePath[MAX_PATH];
+    char TruePath[256];
     read_buffer ReadBuffer;
 
-    snprintf(TruePath, MAX_PATH, "Maps/%s", Path);
+    snprintf(TruePath, 256, "Maps/%s", Path);
     ReadBufferFromFile(&ReadBuffer, TruePath);
 
     /*SaveMapPath*/
     map *Map = &g_Maps[MapI];
-    strcpy_s(Map->Path, MAX_MAP_PATH, Path);
+    SDL_strlcpy(Map->Path, Path, MAX_MAP_PATH);
 
     /*ReadQuadSize*/
     Map->Width = ReadBufferPopByte(&ReadBuffer) + 1;
@@ -438,7 +435,7 @@ void ReadMap(int MapI, const char *Path) {
         text *Text = &Map->Texts[I];
         Text->Pos.X = ReadBufferPopByte(&ReadBuffer);
         Text->Pos.Y = ReadBufferPopByte(&ReadBuffer);
-        ReadBufferPopString(&ReadBuffer, _countof(Text->Str), Text->Str);
+        ReadBufferPopString(&ReadBuffer, countof(Text->Str), Text->Str);
     }
     qsort(Map->Texts, Map->TextCount, sizeof(*Map->Texts), CmpPointsWrapper); 
 
@@ -452,7 +449,7 @@ void ReadMap(int MapI, const char *Path) {
         Object->Dir = Object->StartingDir;  
         Object->Speed = ReadBufferPopByte(&ReadBuffer) % 2;
         Object->Tile = ReadBufferPopByte(&ReadBuffer) & 0xF0;
-        ReadBufferPopString(&ReadBuffer, _countof(Object->Str), Object->Str);
+        ReadBufferPopString(&ReadBuffer, countof(Object->Str), Object->Str);
     }
 
     /*ReadDoors*/
@@ -463,7 +460,7 @@ void ReadMap(int MapI, const char *Path) {
         Door->Pos.Y = ReadBufferPopByte(&ReadBuffer);
         Door->DstPos.X = ReadBufferPopByte(&ReadBuffer);
         Door->DstPos.Y = ReadBufferPopByte(&ReadBuffer);
-        ReadBufferPopString(&ReadBuffer, _countof(Door->Path), Door->Path);
+        ReadBufferPopString(&ReadBuffer, countof(Door->Path), Door->Path);
     }
     qsort(Map->Doors, Map->DoorCount, sizeof(*Map->Doors), CmpPointsWrapper);
 
@@ -602,7 +599,7 @@ void SetPlayerToDefault(void) {
 
 void ActivateWorld(void) {
     if(!g_IsWorldActive) {
-        g_IsWorldActive = TRUE;
+        g_IsWorldActive = true;
         ReadTileData("Flower", g_FlowerData, 3);
         ReadTileData("Water", g_WaterData, 7);
         ReadTileData("MiscSprites", &g_SpriteData[SPR_START], 2);
@@ -741,7 +738,7 @@ void UpdateObjects(uint32_t Flags) {
     g_SpriteCount = 0;
     UpdatePlayerMovement();
     PushPlayerSprite(Flags);
-    for(int MapI = 0; MapI < (int) _countof(g_Maps); MapI++) {
+    for(int MapI = 0; MapI < (int) countof(g_Maps); MapI++) {
         map *Map = &g_Maps[MapI];
         for(int ObjI = 0; ObjI < Map->ObjectCount; ObjI++) {
             object *Object = &Map->Objects[ObjI];
@@ -758,7 +755,7 @@ void UpdateObjects(uint32_t Flags) {
 }
 
 void MovePlayerAsync(quad_info NewQuadInfo, int Tick) {
-    g_Player.IsMoving = TRUE;
+    g_Player.IsMoving = true;
     g_Player.Tick = Tick;
 
     if(g_InOverworld) {
@@ -789,7 +786,7 @@ void MovePlayerSync(uint32_t Flags) {
     }
 } 
 
-BOOL IsSolidPropForPlayer(quad_prop Prop) {
+bool IsSolidPropForPlayer(quad_prop Prop) {
     return (
         g_Player.Tile == ANIM_SEAL ? 
             Prop == QUAD_PROP_WATER : 
@@ -799,14 +796,14 @@ BOOL IsSolidPropForPlayer(quad_prop Prop) {
 
 void TransitionColors(void) {
     Pause(8);
-    g_Bitmap.Colors[0] = g_Palletes[g_Maps[g_MapI].PalleteI][1]; 
-    g_Bitmap.Colors[1] = g_Palletes[g_Maps[g_MapI].PalleteI][2]; 
-    g_Bitmap.Colors[2] = g_Palletes[g_Maps[g_MapI].PalleteI][3]; 
+    g_Pallete[0] = g_Palletes[g_Maps[g_MapI].PalleteI][1]; 
+    g_Pallete[1] = g_Palletes[g_Maps[g_MapI].PalleteI][2]; 
+    g_Pallete[2] = g_Palletes[g_Maps[g_MapI].PalleteI][3]; 
     Pause(8);
-    g_Bitmap.Colors[0] = g_Palletes[g_Maps[g_MapI].PalleteI][2]; 
-    g_Bitmap.Colors[1] = g_Palletes[g_Maps[g_MapI].PalleteI][3]; 
+    g_Pallete[0] = g_Palletes[g_Maps[g_MapI].PalleteI][2]; 
+    g_Pallete[1] = g_Palletes[g_Maps[g_MapI].PalleteI][3]; 
     Pause(8);
-    g_Bitmap.Colors[0] = g_Palletes[g_Maps[g_MapI].PalleteI][3]; 
+    g_Pallete[0] = g_Palletes[g_Maps[g_MapI].PalleteI][3]; 
     Pause(8);
 }
 
@@ -981,7 +978,7 @@ static void UpdateWorldMap(const world_map_entry *Entry) {
 }
 
 static const world_map_entry *FindWorldMapEntry(void) {
-    size_t N = _countof(g_WorldMapTable);
+    size_t N = countof(g_WorldMapTable);
     const world_map_entry *Entry = g_WorldMapTable;
     const char *OverworldPath = GetOverworldPath();
     ARY_FOR_EACH(Entry, N) {

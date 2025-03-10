@@ -6,6 +6,7 @@
 #include "render.h"
 #include "world.h"
 #include "save.h"
+#include <stdio.h>
 
 static void FadeOutMusic(void) {
     int Tick = 60;
@@ -46,11 +47,11 @@ static void FadeInTrainer(void) {
     Pause(8);
     SetPalleteTransition(PAL_OAK, 3, 3, 3);
     Pause(8);
-    g_Bitmap.Colors[1] = g_Palletes[PAL_OAK][2];
+    g_Pallete[1] = g_Palletes[PAL_OAK][2];
     Pause(8);
-    g_Bitmap.Colors[1] = g_Palletes[PAL_OAK][1];
+    g_Pallete[1] = g_Palletes[PAL_OAK][1];
     Pause(8);
-    g_Bitmap.Colors[2] = g_Palletes[PAL_OAK][2];
+    g_Pallete[2] = g_Palletes[PAL_OAK][2];
     Pause(24);
 }
 
@@ -295,7 +296,7 @@ static void PresentNameSelect(name_select *Select) {
     char MenuText[64];
     snprintf(
         MenuText, 
-        _countof(MenuText), 
+        countof(MenuText), 
         "NEW NAME\n%s\n%s\n%s", 
         Select->PresetNames[0], 
         Select->PresetNames[1],

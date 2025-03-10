@@ -5,7 +5,9 @@
 #include <stdint.h>
 #include <string.h>
 #include <time.h>
-#include <windows.h>
+#include <SDL3/SDL.h>
+#include <errno.h>
+#include <unistd.h>
 
 #include "audio.h"
 #include "frame.h"
@@ -13,13 +15,11 @@
 #include "input.h"
 #include "intro.h"
 #include "options.h"
-#include "procs.h"
 #include "scalar.h"
 #include "text.h"
 #include "world.h"
 #include "save.h"
 #include "state.h"
-#include "win32.h"
 
 /*Macro Strings*/
 #define RPC_INTRO "What do you want to do?"
@@ -27,7 +27,7 @@
 /*Globals*/
 static const rect g_SaveRect = {4, 0, 20, 10};
 
-static BOOL g_IsPauseAttempt;
+static bool g_IsPauseAttempt;
 
 void GS_MAIN_MENU(void);
 
@@ -98,17 +98,17 @@ static void ClearContinuePrompt(void) {
 }
 
 static void OpenContinuePrompt(void) {
-    BOOL ContinuePromptOpen = TRUE;
+    bool ContinuePromptOpen = true;
     PlaySoundEffect(SFX_PRESS_AB); 
     PlaceSave(g_ContinueSaveRect.Rect);
     while(ContinuePromptOpen) {
         NextFrame();
         if(VirtButtons[BT_A] == 1) {
             ContinueGame();
-            ContinuePromptOpen = FALSE;
+            ContinuePromptOpen = false;
         } else if(VirtButtons[BT_B] == 1) {
             ClearContinuePrompt();
-            ContinuePromptOpen = FALSE;
+            ContinuePromptOpen = false;
         }
     }
 }
@@ -181,24 +181,24 @@ static void OpenText(map *Map, point Point) {
     ClearWindow();
 }
 
-static BOOL UpdateKeyboard(void) {
+static bool UpdateKeyboard(void) {
     if(VirtButtons[BT_UP]) {
         g_Player.Dir = DIR_UP;
-        return TRUE;
+        return true;
     } 
     if(VirtButtons[BT_LEFT]) {
         g_Player.Dir = DIR_LEFT;
-        return TRUE;
+        return true;
     } 
     if(VirtButtons[BT_DOWN]) {
         g_Player.Dir = DIR_DOWN;
-        return TRUE;
+        return true;
     } 
     if(VirtButtons[BT_RIGHT]) {
         g_Player.Dir = DIR_RIGHT;
-        return TRUE;
+        return true;
     }
-    return FALSE;
+    return false;
 }
 
 object *GetFacingObject(quad_info NewQuadInfo) {
@@ -221,18 +221,18 @@ object *GetFacingObject(quad_info NewQuadInfo) {
     return NULL;
 }
 
-static BOOL IsLeapAttempted(object *Obj, BOOL AttemptMove, const quad_info *QuadInfo) {
+static bool IsLeapAttempted(object *Obj, bool AttemptMove, const quad_info *QuadInfo) {
     return Obj->Dir == DIR_DOWN && AttemptMove && QuadInfo->Prop == QUAD_PROP_EDGE;
 }
 
-static quad_info FetchNewQuadInfo(object *Obj, BOOL AttemptMove) {
+static quad_info FetchNewQuadInfo(object *Obj, bool AttemptMove) {
     point FacingPoint = GetFacingPoint(Obj->Pos, Obj->Dir);
     quad_info QuadInfo = GetQuadInfo(FacingPoint);
 
     return QuadInfo;
 }
 
-static quad_info FetchTestQuadInfo(object *Obj, BOOL AttemptMove, quad_info NewQuadInfo) {
+static quad_info FetchTestQuadInfo(object *Obj, bool AttemptMove, quad_info NewQuadInfo) {
     quad_info TestQuadInfo = NewQuadInfo;
     if(IsLeapAttempted(Obj, AttemptMove, &TestQuadInfo)) {
         TestQuadInfo.Point.Y++;
@@ -247,7 +247,7 @@ void GS_NORMAL(void) {
     if(g_Player.Tick == 0) {
         UpdatePallete();
         if(g_IsPauseAttempt) {
-            g_IsPauseAttempt = FALSE;
+            g_IsPauseAttempt = false;
             PlaySoundEffect(SFX_START_MENU); 
             PushState(GS_START_MENU);
             PushWindowTask(&StartMenu.WindowTask);
@@ -630,8 +630,8 @@ void GS_RED_PC_REPEAT_INTRO(void) {
     PopState();
 }
 
-static BOOL DoesSaveExist(void) {
-    return GetFileAttributes("Save") != INVALID_FILE_ATTRIBUTES;
+static bool DoesSaveExist(void) {
+    return SDL_GetPathInfo("Save", NULL);
 }
 
 static void PlayGame(void) {
@@ -661,34 +661,37 @@ static void PlayGame(void) {
     }
 }
 
-
-void SetDirectoryToShared(void) {
-    char Path[MAX_PATH];
-    char *Find;
-
-    GetModuleFileName(NULL, Path, MAX_PATH - 16);
-    Find = strrchr(Path, '\\');
-    if(!Find) return;
-    *Find = '\0';
-    Find = strrchr(Path, '\\');
-    if(!Find) return;
-    strcpy(Find, "\\Shared"); 
-    SetCurrentDirectory(Path);
+static void SetDirectoryToShared(void) {
+    const char *BasePath = SDL_GetBasePath();
+    if(!BasePath) {
+        fprintf(stderr, "SDL_GetBasePath: %s\n", SDL_GetError());
+        exit(EXIT_FAILURE);
+    }
+    char *SharedPath;
+    if(SDL_asprintf(&SharedPath, "%s/../Shared", BasePath) < 0) {
+        fprintf(stderr, "asprintf: %d\n", strerror(errno));
+        exit(EXIT_FAILURE);
+    }
+    chdir(SharedPath);
+    free(SharedPath);
 }
 
-int WINAPI WinMain(
-    HINSTANCE Instance, 
-    HINSTANCE Prev, 
-    LPSTR CmdLine, 
-    int CmdShow
-) {
-    UNREFERENCED_PARAMETER(Prev);
-    UNREFERENCED_PARAMETER(CmdLine);
-    UNREFERENCED_PARAMETER(CmdShow);
-
-    srand(time(NULL));
+int main(void) {
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+        FatalSDL("SDL_Init");
+    }
+    if (!SDL_CreateWindowAndRenderer("PokeGame", BM_WIDTH * 4, 
+                BM_HEIGHT * 4, 0, &g_Window, &g_Renderer)) {
+        FatalSDL("SDL_CreateWindowAndRenderer");
+    }
+    g_Texture = SDL_CreateTexture(g_Renderer, SDL_PIXELFORMAT_RGB24, 
+            SDL_TEXTUREACCESS_STREAMING, BM_WIDTH, BM_HEIGHT);
+    if (!g_Texture) {
+        FatalSDL("SDL_CreateTexture");
+    }
+    SDL_SetTextureScaleMode(g_Texture, SDL_SCALEMODE_NEAREST);
     SetDirectoryToShared();
-    CreateGameWindow(Instance);
+    InitAudio();
     PlayGame();
     return 0;
 }

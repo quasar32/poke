@@ -1,10 +1,9 @@
 #ifndef SAVE_H
 #define SAVE_H
 
-#include <stdbool.h>
-
 #include "world.h"
 #include "window_task.h"
+#include "misc.h"
 
 typedef struct save_rect {
     window_task WindowTask;
@@ -19,8 +18,8 @@ extern char g_Rival[8];
 void ReadSaveHeader(void);
 void ReadSave(void);
 
-BOOL WriteSaveHeader(void);
-BOOL WriteSave(void);
+bool WriteSaveHeader(void);
+bool WriteSave(void);
 
 void PlaceSave(rect Rect);
 void ResetSaveSec(void);

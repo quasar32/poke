@@ -1,8 +1,6 @@
 #ifndef COORD_H 
 #define COORD_H 
 
-#include <windows.h>
-
 #include "scalar.h"
 
 typedef struct rect {

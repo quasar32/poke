@@ -2,7 +2,6 @@
 #define WORLD_H
 
 #include <stdint.h>
-#include <windows.h>
 
 #include "coord.h"
 #include "render.h"
@@ -100,7 +99,7 @@ typedef struct quad_info {
 extern const point DirPoints[4];
 extern const point NextPoints[4];
 
-extern BOOL g_InOverworld;
+extern bool g_InOverworld;
 extern object g_Player;
 
 extern int g_MapI;
@@ -155,7 +154,7 @@ void SwitchOverworldMusic(void);
 void TranslateQuadRectToTiles(point NewPoint);
 void UpdateObjects(uint32_t Flags);
 void MovePlayerAsync(quad_info NewQuadInfo, int Tick);
-BOOL IsSolidPropForPlayer(quad_prop Prop);
+bool IsSolidPropForPlayer(quad_prop Prop);
 point GetLoadedDeltaPoint(point NewPoint);
 void MovePlayerSync(uint32_t Flags);
 void TransitionColors(void);

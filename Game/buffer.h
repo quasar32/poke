@@ -1,7 +1,6 @@
 #pragma once
 
 #include <stdint.h>
-#include <windows.h>
 
 #include "inventory.h"
 #include "world.h"
@@ -17,8 +16,7 @@ typedef struct write_buffer {
     int Index;
 } write_buffer;
 
-BOOL ReadObject(HANDLE FileHandle, LPVOID Object, DWORD ObjectSize);
-DWORD ReadAll(LPCSTR Path, LPVOID Bytes, DWORD ToRead);
+int ReadAll(const char *Path, void *Bytes, int ToRead);
 
 void ReadBufferFromFile(read_buffer *ReadBuffer, const char *Path); 
 uint8_t ReadBufferPopByte(read_buffer *ReadBuffer);
@@ -29,7 +27,7 @@ void ReadBufferPopSaveObject(read_buffer *ReadBuffer, object *Object);
 void ReadBufferPopSaveObjects(read_buffer *ReadBuffer, map *Map);
 void ReadBufferPopInventory(read_buffer *ReadBuffer, inventory *Inventory);
 
-BOOL WriteAll(LPCSTR Path, LPCVOID Data, DWORD Size);
+bool WriteAll(const char *Path, void *Data, int Size);
 
 void WriteBufferPushByte(write_buffer *WriteBuffer, int Byte);
 void WriteBufferPushObject(write_buffer *WriteBuffer, const void *Object, size_t Size);

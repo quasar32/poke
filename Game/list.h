@@ -1,8 +1,7 @@
 #ifndef LIST_H
 #define LIST_H
 
-#include <stdbool.h>
-#include <stdio.h>
+#include <stddef.h>
 
 #include "scalar.h"
 
@@ -18,26 +17,26 @@
 
 #define LIST_FOR_EACH(Pos, Head, Member)                            \
     for(                                                            \
-        Pos = LIST_ENTRY((Head)->Next, __typeof(*Pos), Member);     \
+        Pos = LIST_ENTRY((Head)->Next, typeof(*Pos), Member);     \
         &Pos->Member != (Head);                                     \
-        Pos = LIST_ENTRY(Pos->Member.Next, __typeof(*Pos), Member)  \
+        Pos = LIST_ENTRY(Pos->Member.Next, typeof(*Pos), Member)  \
     )
 
 #define LIST_FOR_EACH_SAFE(Pos, N, Head, Member)                    \
     for(                                                            \
-        Pos = LIST_ENTRY((Head)->Next, __typeof(*Pos), Member),     \
-        N = LIST_ENTRY(Pos->Member.Next, __typeof(*Pos), Member);  \
+        Pos = LIST_ENTRY((Head)->Next, typeof(*Pos), Member),     \
+        N = LIST_ENTRY(Pos->Member.Next, typeof(*Pos), Member);  \
         &Pos->Member != (Head);                                     \
         Pos = N,                                                    \
-        N = LIST_ENTRY(N->Member.Next, __typeof(*N), Member)        \
+        N = LIST_ENTRY(N->Member.Next, typeof(*N), Member)        \
     ) 
 
 
 #define LIST_FOR_EACH_PREV(Pos, Head, Member)                       \
     for(                                                            \
-        Pos = LIST_ENTRY((Head)->Prev, __typeof(*Pos), Member);     \
+        Pos = LIST_ENTRY((Head)->Prev, typeof(*Pos), Member);     \
         &Pos->Member != (Head);                                     \
-        Pos = LIST_ENTRY(Pos->Member.Prev, __typeof(*Pos), Member)  \
+        Pos = LIST_ENTRY(Pos->Member.Prev, typeof(*Pos), Member)  \
     )
 
 typedef struct list_head {

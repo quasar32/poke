@@ -6,7 +6,7 @@
 #include "text.h"
 #include "window_task.h"
 
-BOOL HasTextBox;
+bool HasTextBox;
 
 static LIST_HEAD(WindowTaskHead);
 
